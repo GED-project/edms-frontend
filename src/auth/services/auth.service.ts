@@ -45,9 +45,99 @@ export interface ResetPasswordPayload {
 }
 
 // ---------------------------------------------------------------------------
-// Mock in-memory "database" — remove when wiring the real backend
+// RBAC Permission Sets — proper inheritance hierarchy
 // ---------------------------------------------------------------------------
-const _registeredEmails = new Set<string>();
+
+/** All permissions granted to a Standard User */
+const STANDARD_USER_PERMISSIONS: Permission[] = [
+  Permission.LOGIN,
+  Permission.LOGOUT,
+  Permission.RESET_PASSWORD,
+  Permission.MANAGE_PROFILE,
+  Permission.CREATE_FOLDER,
+  Permission.UPLOAD_DOCUMENT,
+  Permission.ADD_DESCRIPTION,
+  Permission.PERFORM_OCR,
+  Permission.MANAGE_DOCUMENTS,
+  Permission.SHARE_DOCUMENT,
+  Permission.REQUEST_SHARING_DOCUMENT,
+  Permission.SEARCH_DOCUMENT,
+  Permission.FULL_TEXT_SEARCH,
+  Permission.META_DATA_SEARCH,
+  Permission.RETRIEVE_DOCUMENT,
+];
+
+/** Manager inherits all Standard User permissions + Manager-specific ones */
+const MANAGER_PERMISSIONS: Permission[] = [
+  ...STANDARD_USER_PERMISSIONS,
+  Permission.REVIEW_DOCUMENT,
+  Permission.MANAGE_USERS,
+  Permission.MANAGE_PERMISSIONS,
+  Permission.APPROVE_SHARING_REQUEST,
+  Permission.MANAGE_LIBRARIES,
+  Permission.APPROVE_DOCUMENT,
+];
+
+/** Admin inherits all Manager permissions (which include Standard User) + Admin-specific ones */
+const ADMIN_PERMISSIONS: Permission[] = [
+  ...MANAGER_PERMISSIONS,
+  Permission.CONSULTE_AUDIT_LOGS,
+];
+
+// ---------------------------------------------------------------------------
+// Demo accounts — always available, no registration required
+// ---------------------------------------------------------------------------
+
+const DEMO_ACCOUNTS: Record<string, { fullName: string; role: Role; permissions: Permission[] }> = {
+  'admin@entreprise.fr': {
+    fullName: 'Admin System',
+    role: Role.ADMIN,
+    permissions: ADMIN_PERMISSIONS,
+  },
+  'manager@entreprise.fr': {
+    fullName: 'Jean Dupont',
+    role: Role.MANAGER,
+    permissions: MANAGER_PERMISSIONS,
+  },
+  'user@entreprise.fr': {
+    fullName: 'Marie Martin',
+    role: Role.USER,
+    permissions: STANDARD_USER_PERMISSIONS,
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Mock persistent "database" — stored in localStorage to survive page refresh
+// Replace entirely when wiring the real backend.
+// ---------------------------------------------------------------------------
+
+const MOCK_DB_KEY = 'edms_mock_registered_users';
+
+interface MockRegisteredUser {
+  email: string;
+  fullName: string;
+  /** In a real app the backend hashes this — here we store plaintext for demo only */
+  password: string;
+}
+
+function _loadRegisteredUsers(): Map<string, MockRegisteredUser> {
+  try {
+    const raw = localStorage.getItem(MOCK_DB_KEY);
+    if (!raw) return new Map();
+    const arr: MockRegisteredUser[] = JSON.parse(raw);
+    return new Map(arr.map((u) => [u.email, u]));
+  } catch {
+    return new Map();
+  }
+}
+
+function _saveRegisteredUsers(db: Map<string, MockRegisteredUser>): void {
+  localStorage.setItem(MOCK_DB_KEY, JSON.stringify([...db.values()]));
+}
+
+// ---------------------------------------------------------------------------
+// Service functions
+// ---------------------------------------------------------------------------
 
 /**
  * Check whether an email is already taken.
@@ -57,7 +147,11 @@ export async function checkEmailAvailability(
   email: string,
 ): Promise<{ available: boolean }> {
   await new Promise((r) => setTimeout(r, 400));
-  return { available: !_registeredEmails.has(email.toLowerCase()) };
+  const emailLower = email.toLowerCase();
+  // Demo accounts are always "taken"
+  if (DEMO_ACCOUNTS[emailLower]) return { available: false };
+  const db = _loadRegisteredUsers();
+  return { available: !db.has(emailLower) };
 }
 
 /**
@@ -77,16 +171,27 @@ export async function registerUser(
 
   const emailLower = payload.email.toLowerCase();
 
-  if (_registeredEmails.has(emailLower)) {
+  // Block registration on demo accounts
+  if (DEMO_ACCOUNTS[emailLower]) {
     return { success: false, message: 'Cette adresse e-mail est déjà utilisée.' };
   }
 
-  _registeredEmails.add(emailLower);
+  const db = _loadRegisteredUsers();
+
+  if (db.has(emailLower)) {
+    return { success: false, message: 'Cette adresse e-mail est déjà utilisée.' };
+  }
+
+  db.set(emailLower, {
+    email: emailLower,
+    fullName: payload.fullName,
+    password: payload.password, // Backend would hash this — demo only
+  });
+  _saveRegisteredUsers(db);
 
   return {
     success: true,
-    message:
-      'Compte créé avec succès. Un e-mail de confirmation vous a été envoyé.',
+    message: 'Compte créé avec succès. Un e-mail de confirmation vous a été envoyé.',
   };
 }
 
@@ -101,27 +206,46 @@ export async function loginUser(
 
   const emailLower = payload.email.toLowerCase();
 
-  // Mock behavior pour le template de test :
-  // On autorise si l'email a été enregistré OU si on utilise un email de démo.
-  const isDemoOrRegistered = _registeredEmails.has(emailLower) || emailLower === 'admin@entreprise.fr' || emailLower === 'jean@entreprise.fr';
+  // 1. Check demo accounts first (any password ≥ 8 chars is accepted)
+  if (DEMO_ACCOUNTS[emailLower]) {
+    if (payload.password.length < 8) {
+      return { success: false, message: 'Le mot de passe doit contenir au moins 8 caractères.' };
+    }
+    const demo = DEMO_ACCOUNTS[emailLower];
+    return {
+      success: true,
+      accessToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.mock_token.signature_mock',
+      user: {
+        id: `demo_${emailLower.split('@')[0]}`,
+        email: emailLower,
+        fullName: demo.fullName,
+        role: demo.role,
+        permissions: demo.permissions,
+      },
+    };
+  }
 
-  if (!isDemoOrRegistered || payload.password.length < 8) {
+  // 2. Check registered users (password must match what was used at registration)
+  const db = _loadRegisteredUsers();
+  const registeredUser = db.get(emailLower);
+
+  if (!registeredUser) {
+    return { success: false, message: 'Identifiants incorrects ou compte inexistant.' };
+  }
+
+  if (registeredUser.password !== payload.password) {
     return { success: false, message: 'Identifiants incorrects ou compte inexistant.' };
   }
 
   return {
     success: true,
-    accessToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.mock_token.signature_mock', // Faux JWT
+    accessToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.mock_token.signature_mock',
     user: {
-      id: 'usr_12345',
+      id: `usr_${emailLower.split('@')[0]}`,
       email: emailLower,
-      fullName: emailLower.split('@')[0], // Pseudo fullName temp
-      role: emailLower === 'admin@entreprise.fr' ? Role.ADMIN : (emailLower === 'jean@entreprise.fr' ? Role.MANAGER : Role.USER),
-      permissions: emailLower === 'admin@entreprise.fr' 
-        ? Object.values(Permission) 
-        : (emailLower === 'jean@entreprise.fr' 
-            ? [Permission.READ_DOCUMENT, Permission.CREATE_DOCUMENT, Permission.EDIT_DOCUMENT, Permission.APPROVE_DOCUMENT, Permission.VIEW_AUDIT_LOGS]
-            : [Permission.READ_DOCUMENT, Permission.CREATE_DOCUMENT]),
+      fullName: registeredUser.fullName,
+      role: Role.USER,
+      permissions: STANDARD_USER_PERMISSIONS,
     },
   };
 }
@@ -133,9 +257,7 @@ export async function loginUser(
  * et de blacklister l'Access Token si nécessaire.
  */
 export async function logoutUser(): Promise<{ success: boolean }> {
-  // Simule l'appel API pour blacklister le token
   await new Promise((r) => setTimeout(r, 400));
-  
   return { success: true };
 }
 
@@ -143,10 +265,10 @@ export async function logoutUser(): Promise<{ success: boolean }> {
  * Request a password reset link.
  * Replace with: POST /api/auth/forgot-password
  */
-export async function forgotPassword(email: string): Promise<{ success: boolean }> {
+export async function forgotPassword(_email: string): Promise<{ success: boolean }> {
   await new Promise((r) => setTimeout(r, 1000));
-  
-  // Dans un vrai système, on ne dit jamais si l'email existe ou non pour éviter 
+
+  // Dans un vrai système, on ne dit jamais si l'email existe ou non pour éviter
   // le "user enumeration". On répond toujours "Succès".
   // On écrit un log console juste pour pouvoir tester le flux de développement localement.
   console.log(`[Mock Dev] Faux email envoyé ! Le lien de réinitialisation est: http://localhost:5173/auth/reset-password?token=mock_reset_token_${Date.now()}`);
@@ -165,6 +287,5 @@ export async function resetPassword(payload: ResetPasswordPayload): Promise<{ su
     return { success: false, message: 'Le jeton de réinitialisation est invalide ou a expiré.' };
   }
 
-  // Si on est ici, le mot de passe est censé être réinitialisé avec succès côté backend
   return { success: true, message: 'Votre mot de passe a été modifié avec succès.' };
 }

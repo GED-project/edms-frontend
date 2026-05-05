@@ -44,6 +44,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const hasPermission = (permission: Permission) => {
+    // Le rôle Admin a toujours toutes les permissions par défaut (Super User)
+    if (user?.role === Role.ADMIN) return true;
+    
     return user?.permissions.includes(permission) ?? false;
   };
 

@@ -138,7 +138,7 @@ export function ResetPasswordPage() {
               </p>
             </div>
             <Button
-              variant="default"
+              variant="primary"
               size="lg"
               className="w-full"
               onClick={() => navigate('/auth/login')}

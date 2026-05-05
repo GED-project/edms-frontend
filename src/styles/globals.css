@@ -17,7 +17,7 @@
   --card-foreground: var(--color-zinc-950);
   --popover: var(--color-white);
   --popover-foreground: var(--color-zinc-950);
-  --primary: var(--color-blue-500);
+  --primary: var(--color-orange-500);
   --primary-foreground: var(--color-white);
   --secondary: var(--color-zinc-100);
   --secondary-foreground: var(--color-zinc-900);
@@ -34,13 +34,13 @@
 }
 
 .dark {
-  --background: var(--color-zinc-950);
+  --background: #0f1117;
   --foreground: var(--color-zinc-50);
-  --card: var(--color-zinc-950);
+  --card: #161821;
   --card-foreground: var(--color-zinc-50);
-  --popover: var(--color-zinc-950);
+  --popover: #161821;
   --popover-foreground: var(--color-zinc-50);
-  --primary: var(--color-blue-600);
+  --primary: var(--color-orange-600);
   --primary-foreground: var(--color-white);
   --secondary: var(--color-zinc-800);
   --secondary-foreground: var(--color-zinc-50);

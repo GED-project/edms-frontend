@@ -1,0 +1,26 @@
+<svg viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">
+  <!-- Black "it" text -->
+  <g>
+    <!-- "i" -->
+    <rect x="107" y="231" width="65" height="70" fill="#1a1a1a"/>
+    <rect x="107" y="357" width="65" height="170" fill="#1a1a1a"/>
+    
+    <!-- "t" -->
+    <rect x="232" y="231" width="60" height="70" fill="#1a1a1a"/>
+    <rect x="262" y="297" width="156" height="110" fill="#1a1a1a"/>
+    <path d="M 368 387 Q 368 530 340 538 L 232 538 L 232 440 L 108 440 L 108 357 L 232 357 L 232 387 Q 232 538 340 538" fill="#1a1a1a"/>
+  </g>
+  
+  <!-- Colored dots -->
+  <!-- Cyan dot -->
+  <circle cx="495" cy="318" r="40" fill="#17BCC6"/>
+  
+  <!-- Blue dot -->
+  <circle cx="625" cy="318" r="40" fill="#0052FF"/>
+  
+  <!-- Orange dot -->
+  <circle cx="495" cy="498" r="40" fill="#FF6B35"/>
+  
+  <!-- Dark gray dot -->
+  <circle cx="625" cy="498" r="40" fill="#4A5568"/>
+</svg>
