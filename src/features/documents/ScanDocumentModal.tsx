@@ -21,7 +21,12 @@ export function ScanDocumentModal({ isOpen, onClose, onScanSuccess }: ScanDocume
   const [progress, setProgress] = useState(0);
   const [ocrText, setOcrText] = useState('');
   const [docName, setDocName] = useState('');
+  const [department, setDepartment] = useState('Général');
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const videoRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
 
@@ -30,40 +35,68 @@ export function ScanDocumentModal({ isOpen, onClose, onScanSuccess }: ScanDocume
     setProgress(0);
     setOcrText('');
     setDocName('');
+    setDepartment('Général');
+    setSelectedTags([]);
+    setIsSubmitting(false);
+    setSelectedFile(null);
   };
 
-  const handleStartScan = async () => {
+  const handleStartScan = async (file?: File) => {
+    if (!file && !selectedFile) return;
+    const targetFile = file || selectedFile;
+    if (targetFile) setSelectedFile(targetFile);
+
     setPhase('scanning');
     setProgress(0);
 
-    // Simulate camera scanning
-    for (let i = 0; i <= 60; i += 10) {
-      await new Promise((r) => setTimeout(r, 200));
+    // Simulate API Call structure
+    // const formData = new FormData();
+    // formData.append('file', targetFile);
+    // const response = await api.post('/ocr/process', formData, { onUploadProgress: ... });
+
+    for (let i = 0; i <= 60; i += 15) {
+      await new Promise((r) => setTimeout(r, 150));
       setProgress(i);
     }
 
     setPhase('processing');
 
-    // Simulate OCR processing
-    for (let i = 60; i <= 100; i += 8) {
-      await new Promise((r) => setTimeout(r, 150));
+    for (let i = 60; i <= 100; i += 10) {
+      await new Promise((r) => setTimeout(r, 100));
       setProgress(Math.min(i, 100));
     }
 
     const randomText = MOCK_OCR_TEXTS[Math.floor(Math.random() * MOCK_OCR_TEXTS.length)];
-    const firstLine = randomText.split('\n')[0].trim();
+    const fileName = targetFile ? targetFile.name.replace(/\.[^.]+$/, '') : 'Document_Scanné';
+    
     setOcrText(randomText);
-    setDocName(firstLine.substring(0, 40));
+    setDocName(fileName);
     setPhase('done');
   };
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
     if (!docName.trim()) {
       toast.error('Veuillez saisir un nom pour le document.');
       return;
     }
+
+    setIsSubmitting(true);
+    
+    // Simulate final API submission
+    await new Promise(r => setTimeout(r, 1000));
+    
+    const scanData = {
+      name: docName,
+      ocrText: ocrText,
+      department: department,
+      tags: selectedTags,
+      originalFile: selectedFile ? { name: selectedFile.name, size: selectedFile.size, type: selectedFile.type } : null,
+      timestamp: new Date().toISOString()
+    };
+    
+    sessionStorage.setItem('edms_last_scan', JSON.stringify(scanData));
     onScanSuccess(docName, ocrText);
-    toast.success(`Document "${docName}" ajouté à la bibliothèque.`);
+    toast.success(`Scan "${docName}" prêt pour l'importation`);
     onClose();
     handleReset();
   };
@@ -97,12 +130,27 @@ export function ScanDocumentModal({ isOpen, onClose, onScanSuccess }: ScanDocume
             }`}
           >
             {phase === 'idle' && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
-                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-purple-500/10">
-                  <ScanLine className="h-8 w-8 text-purple-400" />
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-8">
+                <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-purple-500/10 shadow-xl shadow-purple-500/5">
+                  <ScanLine className="h-10 w-10 text-purple-400" />
                 </div>
-                <p className="text-sm text-muted-foreground">Positionnez votre document dans le cadre</p>
-                <p className="text-xs text-muted-foreground/60">Simulateur OCR — Demo</p>
+                <div className="text-center">
+                  <p className="text-sm font-semibold text-foreground mb-1">Sélectionnez une image à numériser</p>
+                  <p className="text-[11px] text-muted-foreground/60 max-w-[240px]">Formats supportés: JPG, PNG, WEBP. Notre IA extraira automatiquement le texte.</p>
+                </div>
+                <button 
+                  onClick={() => fileInputRef.current?.click()}
+                  className="mt-2 bg-purple-600 hover:bg-purple-700 text-white px-6 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest transition-all shadow-lg shadow-purple-600/20 active:scale-95"
+                >
+                  Choisir un fichier
+                </button>
+                <input 
+                  ref={fileInputRef} 
+                  type="file" 
+                  className="hidden" 
+                  accept="image/*" 
+                  onChange={(e) => e.target.files?.[0] && handleStartScan(e.target.files[0])} 
+                />
               </div>
             )}
 
@@ -174,8 +222,38 @@ export function ScanDocumentModal({ isOpen, onClose, onScanSuccess }: ScanDocume
               {/* Extracted text */}
               <div className="space-y-1.5">
                 <label className="text-sm font-medium text-foreground">Texte extrait (OCR)</label>
-                <div className="rounded-lg border border-border bg-muted/20 p-4 font-mono text-xs text-foreground/80 whitespace-pre-wrap max-h-40 overflow-y-auto">
-                  {ocrText}
+                <textarea
+                  value={ocrText}
+                  onChange={(e) => setOcrText(e.target.value)}
+                  className="w-full h-32 rounded-lg border border-border bg-muted/20 p-3 font-mono text-xs text-foreground/80 focus:outline-none focus:ring-2 focus:ring-purple-500/30 resize-none"
+                  placeholder="Contenu OCR..."
+                />
+              </div>
+
+              {/* Metadata Fields */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium text-foreground">Département</label>
+                  <select 
+                    value={department}
+                    onChange={(e) => setDepartment(e.target.value)}
+                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50"
+                  >
+                    <option>Général</option>
+                    <option>RH</option>
+                    <option>Finance</option>
+                    <option>Juridique</option>
+                    <option>IT</option>
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium text-foreground">Tags</label>
+                  <input 
+                    type="text"
+                    placeholder="tag1, tag2..."
+                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50"
+                    onBlur={(e) => setSelectedTags(e.target.value.split(',').map(t => t.trim()).filter(Boolean))}
+                  />
                 </div>
               </div>
             </div>
@@ -197,7 +275,7 @@ export function ScanDocumentModal({ isOpen, onClose, onScanSuccess }: ScanDocume
             {phase === 'idle' && (
               <button
                 id="start-scan-btn"
-                onClick={handleStartScan}
+                onClick={() => handleStartScan()}
                 className="flex items-center gap-2 rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 transition-colors shadow-sm"
               >
                 <ScanLine className="h-4 w-4" />
@@ -208,10 +286,15 @@ export function ScanDocumentModal({ isOpen, onClose, onScanSuccess }: ScanDocume
               <button
                 id="confirm-scan-btn"
                 onClick={handleConfirm}
-                className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors shadow-sm"
+                disabled={isSubmitting}
+                className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors shadow-sm disabled:opacity-50"
               >
-                <CheckCircle2 className="h-4 w-4" />
-                Ajouter à la bibliothèque
+                {isSubmitting ? (
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="h-4 w-4" />
+                )}
+                Continuer vers l'importation
               </button>
             )}
           </div>

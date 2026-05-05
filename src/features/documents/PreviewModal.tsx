@@ -306,7 +306,7 @@ export function PreviewModal({
                              <div className="w-4 h-4 bg-red-500 rounded-sm" />
                           </div>
                           <h1 className="text-[18px] font-bold text-gray-800 uppercase tracking-widest">
-                            Dream Studio
+                            ITCOMP SAS
                           </h1>
                         </div>
                         

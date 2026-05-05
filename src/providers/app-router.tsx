@@ -4,6 +4,9 @@ import { ScreenLoader } from '@/components/screen-loader';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { DashboardPage } from '@/features/dashboard/page';
 import { DocumentsPage } from '@/features/documents/page';
+import { DocumentViewPage } from '@/features/documents/DocumentViewPage';
+import { DocumentUploadPage } from '@/features/documents/DocumentUploadPage';
+import { ScanDocumentPage } from '@/features/documents/ScanDocumentPage';
 import { AdminPage } from '@/features/admin/page';
 import { SettingsPage } from '@/features/settings/page';
 import { ActivityPage } from '@/features/activity/page';
@@ -27,7 +30,12 @@ export function AppRouter() {
       <Route element={<AppLayout />}>
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />
-        <Route path="/documents" element={<DocumentsPage />} />
+        <Route path="/documents">
+          <Route index element={<DocumentsPage />} />
+          <Route path="upload" element={<DocumentUploadPage />} />
+          <Route path="scan" element={<ScanDocumentPage />} />
+          <Route path=":id" element={<DocumentViewPage />} />
+        </Route>
         <Route path="/admin" element={<AdminPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/activity" element={<ActivityPage />} />

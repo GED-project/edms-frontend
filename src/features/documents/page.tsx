@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Helmet } from 'react-helmet-async';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Search, Filter, MoreVertical, Eye, Pencil, Download, Trash2, FileText,
   FileSpreadsheet, FileImage, File, ChevronLeft, ChevronRight,
@@ -10,14 +10,10 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/providers/auth-provider';
 import { Permission } from '@/lib/auth-rbac/roles';
-import { UploadModal } from './UploadModal';
-import { PreviewModal } from './PreviewModal';
 import { CreateFolderModal, RenameFolderModal, DeleteConfirmModal } from './FolderModals';
 import { VersionHistoryModal } from './VersionHistoryModal';
 import { TagEditor } from './TagEditor';
 import { AddMenu } from './AddMenu';
-import { ScanDocumentModal } from './ScanDocumentModal';
-import { CloudImportModal } from './CloudImportModal';
 import {
   SetExpiryModal, ArchiveModal, BulkDeleteModal, ShareModal, BulkTagModal, MoveToFolderModal
 } from './BulkActionModals';
@@ -180,12 +176,12 @@ function ContextMenu({
       ].filter(a => a.always || a.show)
     : [
         { icon: Eye,      label: 'Consulter',               always: true,  color: 'text-foreground' },
+        { icon: Trash2,   label: 'Supprimer',               always: false, show: canDelete, color: 'text-red-500' },
         { icon: Pencil,   label: 'Modifier',                always: false, show: canEdit,   color: 'text-foreground' },
         { icon: RotateCcw,label: 'Remplacer',              always: false, show: canEdit,   color: 'text-foreground' },
         { icon: Clock,    label: 'Historique des versions', always: true,  color: 'text-foreground' },
         { icon: Tag,      label: 'Gérer les tags',         always: false, show: canEdit,   color: 'text-primary' },
         { icon: Download, label: 'Télécharger',            always: true,  color: 'text-foreground' },
-        { icon: Trash2,   label: 'Supprimer',               always: false, show: canDelete, color: 'text-red-500' },
       ].filter((a) => a.always || a.show);
 
   return (
@@ -247,6 +243,7 @@ function ContextMenu({
 
 export function DocumentsPage() {
   const { user, hasPermission } = useAuth();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const currentFolderId = searchParams.get('folder') || null;
   
@@ -306,8 +303,6 @@ export function DocumentsPage() {
   const [page, setPage] = useState(1);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [sortAsc, setSortAsc] = useState(false);
-  const [isUploadOpen, setIsUploadOpen] = useState(false);
-  const [previewDoc, setPreviewDoc] = useState<DocumentRow | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [managingTagsDoc, setManagingTagsDoc] = useState<DocumentRow | null>(null);
   
@@ -315,7 +310,6 @@ export function DocumentsPage() {
   const [viewMode, setViewMode] = useState<'table' | 'grid'>('table');
   const [departmentFilter, setDepartmentFilter] = useState<string | 'all'>('all');
   const [isScanOpen, setIsScanOpen] = useState(false);
-  const [isCloudOpen, setIsCloudOpen] = useState(false);
   const [bulkAction, setBulkAction] = useState<'expiry' | 'archive' | 'delete' | 'share' | 'tag' | 'move' | null>(null);
 
   const [replacingDoc, setReplacingDoc] = useState<DocumentRow | null>(null);
@@ -620,7 +614,7 @@ export function DocumentsPage() {
 
   const handleApproveDocument = (doc: DocumentRow) => {
     setNodes(prev => prev.map(n => n.id === doc.id ? { ...n, status: 'approved' } : n));
-    activityLogger.log('approve', doc.name, user?.fullName ?? 'Utilisateur', 'Document approuvé depuis l\'aperçu');
+    activityLogger.log('approve', doc.name, user?.fullName ?? 'Utilisateur', 'Document approuvé');
     toast.success(`Le document ${doc.name} a été approuvé`);
   };
 
@@ -653,7 +647,6 @@ export function DocumentsPage() {
   };
 
   const handleOpenEditor = (doc: DocumentRow) => {
-    setPreviewDoc(null);
     toast.info(`Ouverture de l'espace de travail Éditeur pour ${doc.name}`);
     activityLogger.log('edit', doc.name, user?.fullName ?? 'Utilisateur', 'Ouverture du mode éditeur');
   };
@@ -1063,61 +1056,80 @@ export function DocumentsPage() {
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
-                {filtered.map((lib) => (
-                  <div
-                    key={lib.id}
-                    onClick={() => setCurrentFolderId(lib.id)}
-                    className="group relative flex flex-col justify-between rounded-2xl border border-border bg-card p-5 shadow-sm hover:border-primary/40 hover:shadow-md transition-all cursor-pointer overflow-hidden"
-                  >
-                    <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-primary/5 transition-transform group-hover:scale-125" />
-                    <div>
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                          <Library className="h-5 w-5" />
-                        </div>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === lib.id ? null : lib.id); }}
-                          className="relative z-10 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-background hover:text-foreground transition-all"
-                        >
-                          <MoreVertical className="h-4 w-4" />
-                        </button>
-                        {openMenuId === lib.id && (
-                          <div onClick={e => e.stopPropagation()}>
-                            <ContextMenu
-                              doc={lib}
-                              onClose={() => setOpenMenuId(null)}
-                              onPreview={(d) => setPreviewDoc(d)}
-                              onRename={(d) => setFolderToRename(d)}
-                              onReplace={(d) => { setReplacingDoc(d); setIsUploadOpen(true); }}
-                              onHistory={(d) => setHistoryDoc(d)}
-                              onDelete={(d) => setItemToDelete(d)}
-                              onRestore={(d) => setItemToRestore(d)}
-                              onPermanentlyDelete={(d) => setItemToPermanentlyDelete(d)}
-                              onManageTags={(d) => setManagingTagsDoc(d)}
-                              canEdit={canEdit}
-                              canDelete={canDelete}
-                              showTrash={showTrash}
-                              actorName={user?.fullName ?? 'Utilisateur'}
-                            />
+                {filtered.map((item) => {
+                  const isFolder = item.type === 'folder';
+                  const Icon = isFolder ? Library : (TYPE_ICON[item.type] || FileText);
+                  
+                  return (
+                    <div
+                      key={item.id}
+                      onClick={() => isFolder ? setCurrentFolderId(item.id) : navigate(`/documents/${item.id}`)}
+                      className="group relative flex flex-col justify-between rounded-2xl border border-border bg-card p-5 shadow-sm hover:border-primary/40 hover:shadow-md transition-all cursor-pointer overflow-hidden"
+                    >
+                      <div className={`absolute -right-6 -top-6 h-24 w-24 rounded-full transition-transform group-hover:scale-125 ${isFolder ? 'bg-primary/5' : 'bg-zinc-500/5'}`} />
+                      <div>
+                        <div className="flex items-center justify-between mb-4">
+                          <div className={`flex h-11 w-11 items-center justify-center rounded-xl ${isFolder ? 'bg-primary/10 text-primary' : 'bg-accent text-muted-foreground'}`}>
+                            <Icon className="h-5 w-5" />
                           </div>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === item.id ? null : item.id); }}
+                            className="relative z-10 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-background hover:text-foreground transition-all"
+                          >
+                            <MoreVertical className="h-4 w-4" />
+                          </button>
+                          {openMenuId === item.id && (
+                            <div onClick={e => e.stopPropagation()}>
+                              <ContextMenu
+                                doc={item}
+                                onClose={() => setOpenMenuId(null)}
+                                onPreview={(d) => navigate(`/documents/${d.id}`)}
+                                onRename={(d) => setFolderToRename(d)}
+                                onReplace={(d) => { setReplacingDoc(d); navigate(`/documents/upload?replace=${d.id}`); }}
+                                onHistory={(d) => setHistoryDoc(d)}
+                                onDelete={(d) => setItemToDelete(d)}
+                                onRestore={(d) => setItemToRestore(d)}
+                                onPermanentlyDelete={(d) => setItemToPermanentlyDelete(d)}
+                                onManageTags={(d) => setManagingTagsDoc(d)}
+                                canEdit={canEdit}
+                                canDelete={canDelete}
+                                showTrash={showTrash}
+                                actorName={user?.fullName ?? 'Utilisateur'}
+                              />
+                            </div>
+                          )}
+                        </div>
+                        <h3 className="text-base font-bold text-foreground group-hover:text-primary transition-colors truncate" title={item.name}>{item.name}</h3>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          {isFolder ? `${getFolderItemCount(item.id)} dossier(s)` : `${item.size || '--'} • ${item.extension || 'DOC'}`}
+                        </p>
+                      </div>
+                      
+                      <div className="mt-5 pt-4 border-t border-border/50 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <Clock className="h-3.5 w-3.5" />
+                            {new Date(item.date).toLocaleDateString('fr-FR')}
+                          </div>
+                          {canDelete && (
+                            <button 
+                              onClick={(e) => { e.stopPropagation(); setItemToDelete(item); }}
+                              className="p-1 hover:bg-red-500/10 text-red-500 rounded transition-colors"
+                              title="Supprimer"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
+                        {isFolder && item.department && (
+                          <span className="inline-flex items-center rounded-full bg-accent px-2 py-0.5 text-[10px] font-semibold text-foreground">
+                            {item.department}
+                          </span>
                         )}
                       </div>
-                      <h3 className="text-base font-bold text-foreground group-hover:text-primary transition-colors">{lib.name}</h3>
-                      <p className="mt-1 text-sm text-muted-foreground">{getFolderItemCount(lib.id)} folder(s)</p>
                     </div>
-                    <div className="mt-5 pt-4 border-t border-border/50 flex items-center justify-between">
-                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <Clock className="h-3.5 w-3.5" />
-                        {new Date(lib.date).toLocaleDateString('fr-FR')}
-                      </div>
-                      {lib.department && (
-                        <span className="inline-flex items-center rounded-full bg-accent px-2 py-0.5 text-[10px] font-semibold text-foreground">
-                          {lib.department}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -1182,9 +1194,9 @@ export function DocumentsPage() {
                                   <Highlight text={doc.name} query={debouncedSearch} />
                                 </button>
                               ) : (
-                                <p className="font-medium text-foreground truncate max-w-[180px]">
+                                <button onClick={() => navigate(`/documents/${doc.id}`)} className="font-medium text-foreground hover:text-primary hover:underline truncate max-w-[180px] block text-left">
                                   <Highlight text={doc.name} query={debouncedSearch} />
-                                </p>
+                                </button>
                               )}
                               <p className="text-[11px] text-muted-foreground">
                                 {doc.type === 'folder' ? `${getFolderItemCount(doc.id)} élément(s)` : doc.extension}
@@ -1262,9 +1274,9 @@ export function DocumentsPage() {
                             <ContextMenu
                               doc={doc}
                               onClose={() => setOpenMenuId(null)}
-                              onPreview={(d) => setPreviewDoc(d)}
+                              onPreview={(d) => navigate(`/documents/${d.id}`)}
                               onRename={(d) => setFolderToRename(d)}
-                              onReplace={(d) => { setReplacingDoc(d); setIsUploadOpen(true); }}
+                              onReplace={(d) => { setReplacingDoc(d); navigate(`/documents/upload?replace=${d.id}`); }}
                               onHistory={(d) => setHistoryDoc(d)}
                               onDelete={(d) => setItemToDelete(d)}
                               onRestore={(d) => setItemToRestore(d)}
@@ -1325,9 +1337,9 @@ export function DocumentsPage() {
                         <ContextMenu
                           doc={doc}
                           onClose={() => setOpenMenuId(null)}
-                          onPreview={(d) => setPreviewDoc(d)}
+                          onPreview={(d) => navigate(`/documents/${d.id}`)}
                           onRename={(d) => setFolderToRename(d)}
-                          onReplace={(d) => { setReplacingDoc(d); setIsUploadOpen(true); }}
+                          onReplace={(d) => { setReplacingDoc(d); navigate(`/documents/upload?replace=${d.id}`); }}
                           onHistory={(d) => setHistoryDoc(d)}
                           onDelete={(d) => setItemToDelete(d)}
                           onRestore={(d) => setItemToRestore(d)}
@@ -1355,7 +1367,9 @@ export function DocumentsPage() {
                           {doc.name}
                         </button>
                       ) : (
-                        <p className="font-semibold text-foreground truncate" title={doc.name}>{doc.name}</p>
+                        <button onClick={() => navigate(`/documents/${doc.id}`)} className="font-semibold text-foreground hover:text-primary hover:underline truncate w-full text-center">
+                          {doc.name}
+                        </button>
                       )}
                       <p className="text-xs text-muted-foreground">
                         {doc.type === 'folder' ? `${getFolderItemCount(doc.id)} élément(s)` : `${doc.extension} • ${doc.size}`}
@@ -1424,91 +1438,16 @@ export function DocumentsPage() {
       </div>
 
       {!showTrash && (
-        <AddMenu
-          onUploadFile={() => setIsUploadOpen(true)}
-          onScanDocument={() => setIsScanOpen(true)}
-          onImportCloud={() => setIsCloudOpen(true)}
+        <AddMenu 
+          onUpload={() => navigate(`/documents/upload${currentFolderId ? `?folder=${currentFolderId}` : ''}`)} 
+          onScan={() => navigate(`/documents/scan${currentFolderId ? `?folder=${currentFolderId}` : ''}`)}
+          onAddFolder={() => setIsCreateFolderOpen(true)}
         />
       )}
 
-      <UploadModal
-        isOpen={isUploadOpen}
-        onClose={() => { setIsUploadOpen(false); setReplacingDoc(null); }}
-        allTags={allTags}
-        onUploadSuccess={(files, uploadTags, uploadMeta) => {
-          if (replacingDoc && files.length > 0) {
-            const file = files[0];
-            setNodes(prev => prev.map(n => {
-              if (n.id === replacingDoc.id) {
-                const currentVersions = n.versions || [{
-                  id: n.id + '-v1',
-                  version: 1,
-                  size: n.size || '--',
-                  date: n.date,
-                  author: n.author || 'Système',
-                }];
-                const newVersionNum = currentVersions[0].version + 1;
-                const newSize = (file.size / 1024 / 1024 < 1)
-                  ? (file.size / 1024).toFixed(1) + ' KB'
-                  : (file.size / 1024 / 1024).toFixed(1) + ' MB';
-                const newDate = new Date().toISOString();
-                const author = user?.fullName || 'Utilisateur';
-                const newVersion: DocumentVersion = {
-                  id: n.id + '-v' + newVersionNum,
-                  version: newVersionNum,
-                  size: newSize,
-                  date: newDate,
-                  author: author,
-                };
-                return { ...n, size: newSize, date: newDate, author: author, versions: [newVersion, ...currentVersions] };
-              }
-              return n;
-            }));
-            activityLogger.log('upload', replacingDoc.name, user?.fullName ?? 'Utilisateur', 'Nouvelle version créée');
-            toast.success('Nouvelle version créée avec succès !');
-            setReplacingDoc(null);
-          } else {
-            // Add each uploaded file as a new DocumentRow in the current folder
-            const newDocs: DocumentRow[] = files.map((file) => {
-              const ext = file.name.split('.').pop()?.toUpperCase() || 'FILE';
-              const size = file.size < 1048576
-                ? (file.size / 1024).toFixed(1) + ' KB'
-                : (file.size / 1048576).toFixed(1) + ' MB';
-              const typeMap: Record<string, DocumentRow['type']> = {
-                PDF: 'pdf', XLSX: 'excel', XLS: 'excel', PNG: 'image', JPG: 'image', JPEG: 'image', WEBP: 'image',
-              };
-              return {
-                id: Math.random().toString(36).substr(2, 9),
-                name: file.name.replace(/\.[^.]+$/, ''),
-                type: typeMap[ext] || 'other',
-                parentId: currentFolderId,
-                extension: ext,
-                size,
-                status: 'draft' as const,
-                author: user?.fullName || 'Utilisateur',
-                date: new Date().toISOString().split('T')[0],
-                tags: uploadTags,
-                metadata: uploadMeta,
-              };
-            });
-            setNodes(prev => [...newDocs, ...prev]);
-            newDocs.forEach(d => activityLogger.log('upload', d.name, user?.fullName ?? 'Utilisateur', 'Importé dans la bibliothèque'));
-            toast.success(`${files.length} document(s) importé(s)`);
-          }
-        }}
-      />
+      {/* UploadModal removed in favor of DocumentUploadPage navigation */}
 
-      <PreviewModal
-        isOpen={!!previewDoc}
-        onClose={() => setPreviewDoc(null)}
-        document={previewDoc}
-        onApprove={(d) => { handleApproveDocument(d); setPreviewDoc({...d, status: 'approved'}); }}
-        onDuplicate={(d) => { handleDuplicateDocument(d); setPreviewDoc(null); }}
-        onRename={(d) => { setPreviewDoc(null); setFolderToRename(d); }}
-        onDelete={(d) => { setPreviewDoc(null); setItemToDelete(d); }}
-        onDownload={handleDownloadDocument}
-        onOpenEditor={handleOpenEditor}
-      />
+      {/* PreviewModal removed in favor of DocumentViewPage navigation */}
 
       <VersionHistoryModal
         isOpen={!!historyDoc}
@@ -1663,47 +1602,6 @@ export function DocumentsPage() {
         </div>
       )}
 
-      {/* ── AddMenu Modals ────────────────────────────────────────────── */}
-      <ScanDocumentModal
-        isOpen={isScanOpen}
-        onClose={() => setIsScanOpen(false)}
-        onScanSuccess={(name, text) => {
-          const newDoc: DocumentRow = {
-            id: Math.random().toString(36).substr(2, 9),
-            name,
-            type: 'pdf',
-            parentId: currentFolderId,
-            extension: 'PDF',
-            size: 'Scanné (OCR)',
-            status: 'draft',
-            author: user?.fullName || 'Système',
-            date: new Date().toISOString().split('T')[0],
-            metadata: { ocrText: text },
-          };
-          setNodes(prev => [newDoc, ...prev]);
-          activityLogger.log('scan', name, user?.fullName ?? 'Utilisateur', 'Document scanné via OCR');
-        }}
-      />
-      
-      <CloudImportModal
-        isOpen={isCloudOpen}
-        onClose={() => setIsCloudOpen(false)}
-        onImportSuccess={(files) => {
-          const newDocs: DocumentRow[] = files.map(f => ({
-            id: Math.random().toString(36).substr(2, 9),
-            name: f.name.replace(/\.[^.]+$/, ''),
-            type: f.type,
-            parentId: currentFolderId,
-            extension: f.name.split('.').pop()?.toUpperCase() || 'FILE',
-            size: f.size,
-            status: 'draft',
-            author: user?.fullName || 'Système',
-            date: new Date().toISOString().split('T')[0],
-          }));
-          setNodes(prev => [...newDocs, ...prev]);
-          newDocs.forEach(d => activityLogger.log('cloud_import', d.name, user?.fullName ?? 'Utilisateur', 'Importé depuis le cloud'));
-        }}
-      />
 
       {/* ── Bulk Action Modals ────────────────────────────────────────── */}
       <SetExpiryModal
