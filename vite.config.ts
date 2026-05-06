@@ -10,4 +10,25 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  server: {
+    port: 5173,
+    proxy: {
+      '/api': {
+        target: 'https://localhost:44324',
+        changeOrigin: true,
+        secure: false,
+      },
+      '/connect': {
+        target: 'https://localhost:44324',
+        changeOrigin: true,
+        secure: false,
+      },
+      '/signalr-hubs': {
+        target: 'https://localhost:44324',
+        changeOrigin: true,
+        secure: false,
+        ws: true,
+      },
+    },
+  },
 });

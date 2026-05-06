@@ -1,7 +1,6 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 
-// Stockage de l'Access Token en mémoire pour mitiger les attaques XSS.
-// Le Refresh Token, lui, devra idéalement être géré par le backend via des cookies HttpOnly.
+// Access Token stored in memory (not localStorage) to mitigate XSS.
 let _accessToken: string | null = null;
 
 export const setAccessToken = (token: string | null) => {
@@ -10,22 +9,28 @@ export const setAccessToken = (token: string | null) => {
 
 export const getAccessToken = () => _accessToken;
 
-// Création de l'instance Axios
 export const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '/api',
-  // Important pour l'envoi des cookies HttpOnly (ex: Refresh Token) avec chaque requête
   withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
-// Intercepteur de requêtes : ajoute l'Access Token s'il est présent
+// Intercepteur de requêtes : ajoute l'Access Token et le token XSRF s'ils sont présents
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
     const token = getAccessToken();
     if (token && config.headers) {
       config.headers.Authorization = `Bearer ${token}`;
+    }
+    // ABP anti-forgery: lire le cookie XSRF-TOKEN et l'envoyer dans l'en-tête
+    const xsrfToken = document.cookie
+      .split('; ')
+      .find((row) => row.startsWith('XSRF-TOKEN='))
+      ?.split('=')[1];
+    if (xsrfToken && config.headers) {
+      config.headers['X-XSRF-TOKEN'] = decodeURIComponent(xsrfToken);
     }
     return config;
   },
@@ -86,31 +91,36 @@ apiClient.interceptors.response.use(
       isRefreshing = true;
 
       try {
-        // On demande un nouveau token.
-        // On utilise axios natif ici pour ne pas repasser par nos intercepteurs.
-        // NOTE: Si ABP est utilisé, la route exacte dépendra de la config (ex: POST /connect/token avec grant_type=refresh_token)
+        // ABP OpenIddict refresh: POST /connect/token with grant_type=refresh_token
+        // The refresh_token is read from the in-memory store set at login time.
+        const storedRefreshToken = sessionStorage.getItem('edms_refresh_token');
+        if (!storedRefreshToken) throw new Error('No refresh token available');
+
+        const params = new URLSearchParams();
+        params.append('grant_type', 'refresh_token');
+        params.append('refresh_token', storedRefreshToken);
+        params.append('client_id', import.meta.env.VITE_OIDC_CLIENT_ID || 'GedProject_Vue');
+        params.append('scope', import.meta.env.VITE_OIDC_SCOPE || 'openid profile email GedProject');
+
         const response = await axios.post(
-          `${apiClient.defaults.baseURL}/auth/refresh`, // À adapter selon le backend (ex: ABP -> /connect/token)
-          {}, // Le Refresh Token est censé passer via un cookie HttpOnly avec `withCredentials: true`
-          { withCredentials: true }
+          `${import.meta.env.VITE_AUTH_URL || ''}/connect/token`,
+          params,
+          { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
         );
 
-        // Adaptez "access_token" selon la réponse de votre backend (ABP renvoie "access_token")
-        const newToken = response.data.access_token || response.data.token;
-        setAccessToken(newToken);
-        
-        // Mettre à jour le header de la requête originale avec le nouveau token
-        originalRequest.headers['Authorization'] = 'Bearer ' + newToken;
-        
-        processQueue(null, newToken);
-        
-        // Relancer la requête initiale
+        const newAccessToken: string = response.data.access_token;
+        const newRefreshToken: string | undefined = response.data.refresh_token;
+
+        setAccessToken(newAccessToken);
+        if (newRefreshToken) sessionStorage.setItem('edms_refresh_token', newRefreshToken);
+
+        originalRequest.headers['Authorization'] = 'Bearer ' + newAccessToken;
+        processQueue(null, newAccessToken);
         return apiClient(originalRequest);
       } catch (err) {
         processQueue(err, null);
-        // Si le refresh échoue, le Refresh Token est expiré. On déconnecte l'utilisateur.
         setAccessToken(null);
-        // Redirection vers le login (ou déclencher un state global de déconnexion)
+        sessionStorage.removeItem('edms_refresh_token');
         window.location.href = '/auth/login';
         return Promise.reject(err);
       } finally {

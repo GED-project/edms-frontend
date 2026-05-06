@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { useNavigate } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
 import {
   Eye,
@@ -112,6 +113,7 @@ function PasswordStrengthBar({ password }: { password: string }) {
 type ViewState = 'form' | 'success';
 
 export function RegisterPage() {
+  const navigate = useNavigate();
   const [view, setView] = React.useState<ViewState>('form');
   const [showPassword, setShowPassword] = React.useState(false);
   const [showConfirm, setShowConfirm] = React.useState(false);
@@ -190,7 +192,7 @@ export function RegisterPage() {
     return (
       <>
         <Helmet>
-          <title>Confirmation — EDMS Enterprise</title>
+          <title>Compte créé — EDMS Enterprise</title>
         </Helmet>
         <div className="flex min-h-screen items-center justify-center bg-background px-4">
           <div className="w-full max-w-md text-center space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-500">
@@ -202,41 +204,15 @@ export function RegisterPage() {
                 Compte créé avec succès !
               </h1>
               <p className="text-muted-foreground text-sm leading-relaxed">
-                Un e-mail de confirmation a été envoyé à{' '}
-                <span className="font-medium text-foreground">
-                  {registeredEmail}
-                </span>
-                .<br />
-                Cliquez sur le lien dans l&apos;e-mail pour activer votre compte.
+                Votre compte est prêt. Vous pouvez vous connecter dès maintenant.
               </p>
-            </div>
-            <div className="rounded-lg border border-border bg-muted/40 p-4 text-left space-y-2">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                Prochaines étapes
-              </p>
-              {[
-                'Vérifiez votre boîte de réception (et les spams)',
-                'Cliquez sur le lien de confirmation',
-                'Connectez-vous à votre espace EDMS',
-              ].map((step, i) => (
-                <div
-                  key={i}
-                  className="flex items-start gap-2 text-sm text-foreground"
-                >
-                  <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
-                    {i + 1}
-                  </span>
-                  {step}
-                </div>
-              ))}
             </div>
             <Button
-              variant="outline"
               size="lg"
               className="w-full"
-              onClick={() => setView('form')}
+              onClick={() => navigate('/auth/login')}
             >
-              Retour à l&apos;inscription
+              Se connecter
             </Button>
           </div>
         </div>

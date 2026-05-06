@@ -1,14 +1,17 @@
 /**
- * Auth Service
+ * Auth Service — wired to ABP / OpenIddict backend.
  *
- * Responsibility boundary:
- * - Frontend sends credentials over HTTPS (TLS-encrypted transport).
- * - The backend is solely responsible for hashing passwords with bcrypt
- *   and sending the confirmation email.
- * - Swap mock implementations → real API calls when backend is ready.
+ * Login  : POST /connect/token  (Resource Owner Password Credentials)
+ * Register: POST /api/app/account/register  (ABP Account module)
+ * Forgot  : POST /api/app/account/send-password-reset-code
+ * Reset   : POST /api/app/account/reset-password
+ * Profile : GET  /api/identity/my-profile  (resolve role/permissions after login)
  */
 
+import axios from 'axios';
 import { Role, Permission } from '@/lib/auth-rbac/roles';
+import { setAccessToken } from '@/lib/api.client';
+import { apiClient } from '@/lib/api.client';
 
 export interface RegisterPayload {
   fullName: string;
@@ -45,10 +48,9 @@ export interface ResetPasswordPayload {
 }
 
 // ---------------------------------------------------------------------------
-// RBAC Permission Sets — proper inheritance hierarchy
+// RBAC — map ABP roles to frontend Permission sets
 // ---------------------------------------------------------------------------
 
-/** All permissions granted to a Standard User */
 const STANDARD_USER_PERMISSIONS: Permission[] = [
   Permission.LOGIN,
   Permission.LOGOUT,
@@ -67,7 +69,6 @@ const STANDARD_USER_PERMISSIONS: Permission[] = [
   Permission.RETRIEVE_DOCUMENT,
 ];
 
-/** Manager inherits all Standard User permissions + Manager-specific ones */
 const MANAGER_PERMISSIONS: Permission[] = [
   ...STANDARD_USER_PERMISSIONS,
   Permission.REVIEW_DOCUMENT,
@@ -78,214 +79,182 @@ const MANAGER_PERMISSIONS: Permission[] = [
   Permission.APPROVE_DOCUMENT,
 ];
 
-/** Admin inherits all Manager permissions (which include Standard User) + Admin-specific ones */
 const ADMIN_PERMISSIONS: Permission[] = [
   ...MANAGER_PERMISSIONS,
   Permission.CONSULTE_AUDIT_LOGS,
 ];
 
-// ---------------------------------------------------------------------------
-// Demo accounts — always available, no registration required
-// ---------------------------------------------------------------------------
-
-const DEMO_ACCOUNTS: Record<string, { fullName: string; role: Role; permissions: Permission[] }> = {
-  'admin@entreprise.fr': {
-    fullName: 'Admin System',
-    role: Role.ADMIN,
-    permissions: ADMIN_PERMISSIONS,
-  },
-  'manager@entreprise.fr': {
-    fullName: 'Jean Dupont',
-    role: Role.MANAGER,
-    permissions: MANAGER_PERMISSIONS,
-  },
-  'user@entreprise.fr': {
-    fullName: 'Marie Martin',
-    role: Role.USER,
-    permissions: STANDARD_USER_PERMISSIONS,
-  },
-};
-
-// ---------------------------------------------------------------------------
-// Mock persistent "database" — stored in localStorage to survive page refresh
-// Replace entirely when wiring the real backend.
-// ---------------------------------------------------------------------------
-
-const MOCK_DB_KEY = 'edms_mock_registered_users';
-
-interface MockRegisteredUser {
-  email: string;
-  fullName: string;
-  /** In a real app the backend hashes this — here we store plaintext for demo only */
-  password: string;
+function resolvePermissions(roles: string[]): { role: Role; permissions: Permission[] } {
+  const lower = roles.map((r) => r.toLowerCase());
+  if (lower.includes('admin')) return { role: Role.ADMIN, permissions: ADMIN_PERMISSIONS };
+  if (lower.includes('manager')) return { role: Role.MANAGER, permissions: MANAGER_PERMISSIONS };
+  return { role: Role.USER, permissions: STANDARD_USER_PERMISSIONS };
 }
 
-function _loadRegisteredUsers(): Map<string, MockRegisteredUser> {
+// ---------------------------------------------------------------------------
+// ABP profile shape returned by GET /api/identity/my-profile
+// ---------------------------------------------------------------------------
+
+interface AbpProfileResponse {
+  id: string;
+  email: string;
+  name?: string;
+  surname?: string;
+  userName: string;
+}
+
+// ABP returns roles at GET /api/identity/my-profile — roles are a separate
+// endpoint, but we can derive them from the JWT claims directly.
+function extractRolesFromJwt(token: string): string[] {
   try {
-    const raw = localStorage.getItem(MOCK_DB_KEY);
-    if (!raw) return new Map();
-    const arr: MockRegisteredUser[] = JSON.parse(raw);
-    return new Map(arr.map((u) => [u.email, u]));
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    const raw = payload['role'] ?? payload['roles'] ?? payload['http://schemas.microsoft.com/ws/2008/06/identity/claims/role'];
+    if (!raw) return [];
+    return Array.isArray(raw) ? raw : [raw];
   } catch {
-    return new Map();
+    return [];
   }
 }
 
-function _saveRegisteredUsers(db: Map<string, MockRegisteredUser>): void {
-  localStorage.setItem(MOCK_DB_KEY, JSON.stringify([...db.values()]));
-}
-
 // ---------------------------------------------------------------------------
-// Service functions
+// checkEmailAvailability — removed (backend rejects duplicates on register)
+// Kept as a no-op so the register page compiles without changes.
 // ---------------------------------------------------------------------------
 
-/**
- * Check whether an email is already taken.
- * Replace with: GET /api/auth/check-email?email=...
- */
 export async function checkEmailAvailability(
-  email: string,
+  _email: string,
 ): Promise<{ available: boolean }> {
-  await new Promise((r) => setTimeout(r, 400));
-  const emailLower = email.toLowerCase();
-  // Demo accounts are always "taken"
-  if (DEMO_ACCOUNTS[emailLower]) return { available: false };
-  const db = _loadRegisteredUsers();
-  return { available: !db.has(emailLower) };
+  return { available: true };
 }
 
-/**
- * Register a new user.
- * The backend will:
- *  - verify email uniqueness
- *  - hash the password with bcrypt
- *  - persist the user
- *  - send a confirmation email
- *
- * Replace with: POST /api/auth/register
- */
+// ---------------------------------------------------------------------------
+// registerUser — POST /api/app/account/register
+// ---------------------------------------------------------------------------
+
 export async function registerUser(
   payload: RegisterPayload,
 ): Promise<RegisterResult> {
-  await new Promise((r) => setTimeout(r, 800));
-
-  const emailLower = payload.email.toLowerCase();
-
-  // Block registration on demo accounts
-  if (DEMO_ACCOUNTS[emailLower]) {
-    return { success: false, message: 'Cette adresse e-mail est déjà utilisée.' };
+  try {
+    await apiClient.post('/app/account-custom/register', {
+      userName: payload.email.split('@')[0],
+      emailAddress: payload.email,
+      password: payload.password,
+    });
+    return {
+      success: true,
+      message: 'Compte créé avec succès. Un e-mail de confirmation vous a été envoyé.',
+    };
+  } catch (err: any) {
+    const detail: string =
+      err?.response?.data?.error?.message ||
+      err?.response?.data?.error?.details ||
+      'Échec de l\'inscription.';
+    return { success: false, message: detail };
   }
-
-  const db = _loadRegisteredUsers();
-
-  if (db.has(emailLower)) {
-    return { success: false, message: 'Cette adresse e-mail est déjà utilisée.' };
-  }
-
-  db.set(emailLower, {
-    email: emailLower,
-    fullName: payload.fullName,
-    password: payload.password, // Backend would hash this — demo only
-  });
-  _saveRegisteredUsers(db);
-
-  return {
-    success: true,
-    message: 'Compte créé avec succès. Un e-mail de confirmation vous a été envoyé.',
-  };
 }
 
-/**
- * Log in a user.
- * Replace with: POST /api/auth/login or POST /connect/token (ABP)
- */
+// ---------------------------------------------------------------------------
+// loginUser — POST /connect/token (OpenIddict ROPC)
+// ---------------------------------------------------------------------------
+
 export async function loginUser(
   payload: LoginPayload,
 ): Promise<LoginResult> {
-  await new Promise((r) => setTimeout(r, 800));
+  try {
+    const params = new URLSearchParams();
+    params.append('grant_type', 'password');
+    params.append('username', payload.email);
+    params.append('password', payload.password);
+    params.append('client_id', import.meta.env.VITE_OIDC_CLIENT_ID || 'GedProject_Vue');
+    params.append('scope', import.meta.env.VITE_OIDC_SCOPE || 'openid profile email GedProject');
 
-  const emailLower = payload.email.toLowerCase();
+    const authUrl = import.meta.env.VITE_AUTH_URL || '';
+    const { data } = await axios.post(`${authUrl}/connect/token`, params, {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    });
 
-  // 1. Check demo accounts first (any password ≥ 8 chars is accepted)
-  if (DEMO_ACCOUNTS[emailLower]) {
-    if (payload.password.length < 8) {
-      return { success: false, message: 'Le mot de passe doit contenir au moins 8 caractères.' };
-    }
-    const demo = DEMO_ACCOUNTS[emailLower];
+    const accessToken: string = data.access_token;
+    const refreshToken: string | undefined = data.refresh_token;
+
+    // Store tokens
+    setAccessToken(accessToken);
+    if (refreshToken) sessionStorage.setItem('edms_refresh_token', refreshToken);
+
+    // Decode role from JWT, then fetch display name from profile
+    const roles = extractRolesFromJwt(accessToken);
+    const { role, permissions } = resolvePermissions(roles);
+
+    const profileRes = await apiClient.get<AbpProfileResponse>('/account/my-profile', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const profile = profileRes.data;
+    const fullName = [profile.name, profile.surname].filter(Boolean).join(' ') || profile.userName;
+
     return {
       success: true,
-      accessToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.mock_token.signature_mock',
+      accessToken,
       user: {
-        id: `demo_${emailLower.split('@')[0]}`,
-        email: emailLower,
-        fullName: demo.fullName,
-        role: demo.role,
-        permissions: demo.permissions,
+        id: profile.id,
+        email: profile.email,
+        fullName,
+        role,
+        permissions,
       },
     };
+  } catch (err: any) {
+    const detail: string =
+      err?.response?.data?.error_description ||
+      err?.response?.data?.error?.message ||
+      'Identifiants incorrects.';
+    return { success: false, message: detail };
   }
-
-  // 2. Check registered users (password must match what was used at registration)
-  const db = _loadRegisteredUsers();
-  const registeredUser = db.get(emailLower);
-
-  if (!registeredUser) {
-    return { success: false, message: 'Identifiants incorrects ou compte inexistant.' };
-  }
-
-  if (registeredUser.password !== payload.password) {
-    return { success: false, message: 'Identifiants incorrects ou compte inexistant.' };
-  }
-
-  return {
-    success: true,
-    accessToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.mock_token.signature_mock',
-    user: {
-      id: `usr_${emailLower.split('@')[0]}`,
-      email: emailLower,
-      fullName: registeredUser.fullName,
-      role: Role.USER,
-      permissions: STANDARD_USER_PERMISSIONS,
-    },
-  };
 }
 
-/**
- * Log out a user.
- * Replace with: POST /api/auth/logout
- * Le backend est responsable d'invalider le Refresh Token (ex: suppression du cookie)
- * et de blacklister l'Access Token si nécessaire.
- */
+// ---------------------------------------------------------------------------
+// logoutUser — revoke token + clear local state
+// ---------------------------------------------------------------------------
+
 export async function logoutUser(): Promise<{ success: boolean }> {
-  await new Promise((r) => setTimeout(r, 400));
+  setAccessToken(null);
+  sessionStorage.removeItem('edms_refresh_token');
   return { success: true };
 }
 
-/**
- * Request a password reset link.
- * Replace with: POST /api/auth/forgot-password
- */
-export async function forgotPassword(_email: string): Promise<{ success: boolean }> {
-  await new Promise((r) => setTimeout(r, 1000));
+// ---------------------------------------------------------------------------
+// forgotPassword — POST /api/app/account/send-password-reset-code
+// ---------------------------------------------------------------------------
 
-  // Dans un vrai système, on ne dit jamais si l'email existe ou non pour éviter
-  // le "user enumeration". On répond toujours "Succès".
-  // On écrit un log console juste pour pouvoir tester le flux de développement localement.
-  console.log(`[Mock Dev] Faux email envoyé ! Le lien de réinitialisation est: http://localhost:5173/auth/reset-password?token=mock_reset_token_${Date.now()}`);
-
-  return { success: true };
-}
-
-/**
- * Reset the password using the token sent by email.
- * Replace with: POST /api/auth/reset-password
- */
-export async function resetPassword(payload: ResetPasswordPayload): Promise<{ success: boolean; message: string }> {
-  await new Promise((r) => setTimeout(r, 1000));
-
-  if (!payload.token || payload.token.length < 5) {
-    return { success: false, message: 'Le jeton de réinitialisation est invalide ou a expiré.' };
+export async function forgotPassword(email: string): Promise<{ success: boolean }> {
+  try {
+    await apiClient.post('/app/account/send-password-reset-code', {
+      email,
+      appName: 'MVC',
+    });
+    return { success: true };
+  } catch {
+    // Never reveal whether the email exists (anti-enumeration)
+    return { success: true };
   }
-
-  return { success: true, message: 'Votre mot de passe a été modifié avec succès.' };
 }
+
+// ---------------------------------------------------------------------------
+// resetPassword — POST /api/app/account/reset-password
+// ---------------------------------------------------------------------------
+
+export async function resetPassword(
+  payload: ResetPasswordPayload,
+): Promise<{ success: boolean; message: string }> {
+  try {
+    await apiClient.post('/app/account/reset-password', {
+      resetToken: payload.token,
+      password: payload.password,
+    });
+    return { success: true, message: 'Votre mot de passe a été modifié avec succès.' };
+  } catch (err: any) {
+    const detail: string =
+      err?.response?.data?.error?.message ||
+      'Le jeton de réinitialisation est invalide ou a expiré.';
+    return { success: false, message: detail };
+  }
+}
+
