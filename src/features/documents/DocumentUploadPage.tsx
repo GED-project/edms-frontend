@@ -1,19 +1,23 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import jsPDF from 'jspdf';
 import { 
-  X, UploadCloud, File, AlertCircle, CheckCircle2, XCircle, Tag, 
-  ChevronRight, ChevronLeft, Info, Send, History,
-  FileText, Image as ImageIcon, Printer, Download, MoreVertical,
-  RotateCcw, RotateCw, User, Calendar, ShieldCheck, MessageSquare,
-  Search, Sliders, Check, Minus, Trash2, ScanLine, Plus
+  X, UploadCloud, CheckCircle2,
+  ChevronRight, ChevronLeft,
+  FileText,
+  RotateCcw, RotateCw, User, Calendar, ShieldCheck,
+  RefreshCw,
+  Check, Minus, Trash2, ScanLine, Plus
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { loadMetaFields, MetaFieldDefinition } from '../../lib/metadata-store';
+import { getMetadataDefinitions, MetadataDefinitionDto, MetadataFieldType } from '../admin/metadata.service';
+import { getShareableUsers, ShareableUserDto } from '../admin/admin.service';
 import { TagEditor } from './TagEditor';
 import { useAuth } from '../../providers/auth-provider';
 import { activityLogger } from '../../lib/activity-logger';
-import { DocumentRow } from './page';
+import { createDocument } from './document.service';
+import { useScanContext } from './scan-context';
 
 interface UploadFile {
   id: string;
@@ -46,53 +50,180 @@ export function DocumentUploadPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
-  const parentId = searchParams.get('folder') || null;
-  const replaceId = searchParams.get('replace') || null;
+  const { scannedImages, clearScanImages } = useScanContext();
+  
+  // ?lib=LIB_ID&folder=FOLDER_ID  OR legacy ?folder=LIB_ID
+  const libId = searchParams.get('lib') || searchParams.get('folder');
+  const folderId = searchParams.get('folder') && searchParams.get('lib') ? searchParams.get('folder') : null;
   
   const [currentStep, setCurrentStep] = useState<Step>(searchParams.get('source') === 'scan' ? 2 : 1);
-  const [files, setFiles] = useState<UploadFile[]>(() => {
-    if (searchParams.get('source') === 'scan') {
-      const lastScan = sessionStorage.getItem('edms_last_scan');
-      if (lastScan) {
+  const [files, setFiles] = useState<UploadFile[]>([]);
+
+  // Convert scanned image to PDF on component mount if coming from scan page
+  useEffect(() => {
+    if (searchParams.get('source') === 'scan' && scannedImages.length > 0 && files.length === 0) {
+      (async () => {
         try {
-          const { name, ocrText } = JSON.parse(lastScan);
-          const mockBlob = new Blob([ocrText], { type: 'application/pdf' });
-          const mockFile = new File([mockBlob], `${name}.pdf`, { type: 'application/pdf' });
-          return [{
+          const scanMetadata = sessionStorage.getItem('edms_scan_metadata');
+          const metadata = scanMetadata ? JSON.parse(scanMetadata) : {};
+          
+          // Convert one or more scanned images into a single PDF
+          const pdfBlob = await convertImagesToPdf(scannedImages);
+          const pdfFile = new File([pdfBlob], `${metadata.name || 'Document'}.pdf`, { type: 'application/pdf' });
+          
+          setFiles([{
             id: 'scan-result',
-            file: mockFile,
+            file: pdfFile,
             progress: 100,
             status: 'success',
             previewUrl: undefined,
-            name: name || 'Document numérisé',
-            tags: [],
-            metaValues: { ocrText },
+            name: metadata.name || 'Document numérisé',
+            tags: metadata.tags || [],
+            metaValues: { ocrText: metadata.ocrText || '' },
             description: ''
-          }];
-        } catch (e) {
-          return [];
+          }]);
+          
+          toast.success('Image convertie en PDF avec succès');
+        } catch (error) {
+          toast.error('Erreur lors de la conversion en PDF');
+          console.error('PDF conversion error:', error);
+          setFiles([]);
+          navigate('/documents');
+        } finally {
+          clearScanImages();
         }
-      }
+      })();
     }
-    return [];
-  });
+  }, [searchParams, scannedImages, files.length, clearScanImages, navigate]);
+
+  const convertImagesToPdf = async (imageFiles: File[]): Promise<Blob> => {
+    if (imageFiles.length === 0) {
+      throw new Error('No images provided for PDF conversion');
+    }
+
+    const toDataUrl = (file: File) =>
+      new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(new Error('Failed to read file'));
+        reader.readAsDataURL(file);
+      });
+
+    return new Promise((resolve, reject) => {
+      (async () => {
+        try {
+          const pdf = new jsPDF({
+            orientation: 'portrait',
+            unit: 'mm',
+            format: 'a4'
+          });
+
+          for (let i = 0; i < imageFiles.length; i++) {
+            if (i > 0) {
+              pdf.addPage('a4', 'portrait');
+            }
+
+            const file = imageFiles[i];
+            const dataUrl = await toDataUrl(file);
+            const img = await new Promise<HTMLImageElement>((resolveImage, rejectImage) => {
+              const image = new Image();
+              image.onload = () => resolveImage(image);
+              image.onerror = () => rejectImage(new Error('Failed to load image'));
+              image.src = dataUrl;
+            });
+
+            const pageWidth = pdf.internal.pageSize.getWidth();
+            const pageHeight = pdf.internal.pageSize.getHeight();
+            const margin = 5;
+
+            // Scale image to fit page with margins
+            const maxWidth = pageWidth - (margin * 2);
+            const maxHeight = pageHeight - (margin * 2);
+            let finalWidth = maxWidth;
+            let finalHeight = (img.height * maxWidth) / img.width;
+
+            if (finalHeight > maxHeight) {
+              finalHeight = maxHeight;
+              finalWidth = (img.width * maxHeight) / img.height;
+            }
+
+            const x = (pageWidth - finalWidth) / 2;
+            const y = (pageHeight - finalHeight) / 2;
+
+            const imageFormat = file.type === 'image/png' ? 'PNG' : 'JPEG';
+            pdf.addImage(
+              dataUrl,
+              imageFormat,
+              x,
+              y,
+              finalWidth,
+              finalHeight
+            );
+          }
+
+          resolve(pdf.output('blob'));
+        } catch (error) {
+          reject(error);
+        }
+      })();
+    });
+  };
+  
   const [isDragging, setIsDragging] = useState(false);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
-  const [metaFields, setMetaFields] = useState<MetaFieldDefinition[]>([]);
-  const [metaErrors, setMetaErrors] = useState<Record<string, string>>({});
+  const [metaFields, setMetaFields] = useState<MetadataDefinitionDto[]>([]);
+  const [metaFieldsLoading, setMetaFieldsLoading] = useState(false);
+  const [requestApproval, setRequestApproval] = useState(false);
+  const [validators, setValidators] = useState<ShareableUserDto[]>([]);
+  const [selectedValidatorId, setSelectedValidatorId] = useState('');
+
+  const getMetaKey = (field: MetadataDefinitionDto) => field.name || field.id;
+
+  const isMissingRequiredMetadata = (field: MetadataDefinitionDto, value: string | undefined) => {
+    if (field.fieldType === MetadataFieldType.Boolean) {
+      // For required checkboxes, only an explicit checked state is accepted.
+      return value !== 'true';
+    }
+
+    return !value || !value.trim();
+  };
+
+  const loadMetadataDefinitions = React.useCallback(async () => {
+    setMetaFieldsLoading(true);
+    try {
+      const r = await getMetadataDefinitions(0, 200);
+      setMetaFields(r.items);
+    } catch (e) {
+      console.error('Failed to load metadata definitions', e);
+      toast.error("Impossible de charger les champs de metadonnees");
+    } finally {
+      setMetaFieldsLoading(false);
+    }
+  }, []);
+
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const intervalsRef = useRef<Record<string, any>>({});
 
   useEffect(() => {
-    setMetaFields(loadMetaFields());
+    loadMetadataDefinitions();
+
+    getShareableUsers()
+      .then((r) => {
+        const candidates = r
+          .sort((a, b) => a.userName.localeCompare(b.userName));
+        setValidators(candidates);
+      })
+      .catch(() => {
+        setValidators([]);
+      });
     
     // Set meta values from session if coming from scan (for non-file metadata)
     if (searchParams.get('source') === 'scan') {
-      const lastScan = sessionStorage.getItem('edms_last_scan');
-      if (lastScan) {
+      const scanMetadata = sessionStorage.getItem('edms_scan_metadata');
+      if (scanMetadata) {
         try {
-          const { ocrText, department: scanDept, tags: scanTags, name: scanName } = JSON.parse(lastScan);
+          const { ocrText, department: scanDept, tags: scanTags, name: scanName } = JSON.parse(scanMetadata);
           setFiles(prev => prev.map(f => f.id === 'scan-result' ? {
             ...f,
             name: scanName || f.name,
@@ -150,27 +281,9 @@ export function DocumentUploadPage() {
   };
 
   const startUpload = (fileId: string) => {
-    setFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, status: 'uploading' } : f)));
-    let currentProgress = 0;
-    
-    const interval = setInterval(() => {
-      currentProgress += Math.random() * 20 + 10;
-      if (currentProgress >= 100) {
-        clearInterval(interval);
-        delete intervalsRef.current[fileId];
-        setFiles((prev) => prev.map((f) => {
-          if (f.id === fileId && f.status === 'uploading') {
-            return { ...f, progress: 100, status: 'success' };
-          }
-          return f;
-        }));
-      } else {
-        setFiles((prev) => prev.map((f) => f.id === fileId && f.status === 'uploading' ? { ...f, progress: Math.min(currentProgress, 99) } : f));
-      }
-    }, 300);
-    
-    intervalsRef.current[fileId] = interval;
-  };
+    // Mark file ready immediately — actual upload happens on Finish
+    setFiles((prev) => prev.map((f) => f.id === fileId ? { ...f, progress: 100, status: 'success' } : f));
+  };;
 
   const handleDragOver  = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true); };
   const handleDragLeave = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(false); };
@@ -193,11 +306,11 @@ export function DocumentUploadPage() {
   const handleFinish = async () => {
     const successFiles = files.filter(f => f.status === 'success');
     if (successFiles.length === 0) {
-      toast.error("Veuillez attendre que l'upload soit terminé.");
+      toast.error("Veuillez sélectionner au moins un fichier.");
       return;
     }
 
-    // 1. Validation for all files
+    // Validation
     for (const f of successFiles) {
        if (!f.name.trim()) {
           toast.error(`Le document "${f.file.name}" doit avoir un nom.`);
@@ -205,87 +318,79 @@ export function DocumentUploadPage() {
           setCurrentStep(2);
           return;
        }
-       
-       const missing = metaFields.filter(field => field.required && !f.metaValues[field.id]);
+       const missing = metaFields.filter((field) => {
+         const key = getMetaKey(field);
+         return field.isRequired && isMissingRequiredMetadata(field, f.metaValues[key]);
+       });
        if (missing.length > 0) {
-          toast.error(`Champs obligatoires manquants pour "${f.name}": ${missing.map(m => m.label).join(', ')}`);
+         toast.error(`Champs obligatoires manquants pour "${f.name}": ${missing.map(m => m.displayName).join(', ')}`);
           setActiveFileId(f.id);
           setCurrentStep(2);
           return;
        }
     }
 
-    try {
-      const saved = localStorage.getItem('edms_documents_v2');
-      const parsed = saved ? JSON.parse(saved) as DocumentRow[] : [];
-      
-      if (replaceId) {
-        // Replacement Mode: Update existing document with new version
-        const file = successFiles[0];
-        const newSize = file.file.size < 1048576 
-          ? (file.file.size / 1024).toFixed(1) + ' KB' 
-          : (file.file.size / 1048576).toFixed(1) + ' MB';
-        
-        const updatedDocs = parsed.map(doc => {
-          if (doc.id === replaceId) {
-            const currentVersions = doc.versions || [];
-            const nextVersionNum = (currentVersions[0]?.version || 0) + 1;
-            const newVersion = {
-              id: Math.random().toString(36).substr(2, 9),
-              version: nextVersionNum,
-              size: newSize,
-              date: new Date().toISOString(),
-              author: user?.fullName || 'Utilisateur'
-            };
-            return {
-              ...doc,
-              name: file.name,
-              size: newSize,
-              date: new Date().toISOString(),
-              author: user?.fullName || 'Utilisateur',
-              tags: file.tags,
-              department: file.metaValues.department || doc.department,
-              metadata: { ...doc.metadata, ...file.metaValues, description: file.description },
-              versions: [newVersion, ...currentVersions]
-            };
-          }
-          return doc;
-        });
+    // Mark all files as uploading
+    setFiles(prev => prev.map(f => successFiles.some(s => s.id === f.id) ? { ...f, status: 'uploading', progress: 0 } : f));
 
-        localStorage.setItem('edms_documents_v2', JSON.stringify(updatedDocs));
-        toast.success("Nouvelle version créée avec succès");
-      } else {
-        // Standard Upload Mode: Create new documents
-        const newDocs: DocumentRow[] = successFiles.map(f => ({
-          id: Math.random().toString(36).substr(2, 9),
-          name: f.name,
-          type: f.file.type === 'application/pdf' ? 'pdf' : f.file.type.startsWith('image/') ? 'image' : 'other',
-          extension: f.file.name.split('.').pop()?.toUpperCase() || 'FILE',
-          size: f.file.size < 1048576 ? (f.file.size / 1024).toFixed(1) + ' KB' : (f.file.size / 1048576).toFixed(1) + ' MB',
-          date: new Date().toISOString(),
-          author: user?.fullName || 'Utilisateur',
-          department: f.metaValues.department || 'Général',
-          tags: f.tags,
-          parentId: parentId,
-          metadata: { ...f.metaValues, description: f.description },
-          versions: [{
-             id: Math.random().toString(36).substr(2, 9),
-             version: 1,
-             size: f.file.size < 1048576 ? (f.file.size / 1024).toFixed(1) + ' KB' : (f.file.size / 1048576).toFixed(1) + ' MB',
-             date: new Date().toISOString(),
-             author: user?.fullName || 'Utilisateur'
-          }]
-        }));
-        
-        localStorage.setItem('edms_documents_v2', JSON.stringify([...newDocs, ...parsed]));
-        newDocs.forEach(d => activityLogger.log('upload', d.name, user?.fullName ?? 'Utilisateur', 'Document importé via le tunnel'));
-        toast.success(`${newDocs.length} document(s) importé(s) avec succès`);
+    try {
+      let succeeded = 0;
+      for (const f of successFiles) {
+        try {
+          // Safety net: scan-origin image files must be stored as PDF.
+          let fileToUpload = f.file;
+          const isScanOrigin = searchParams.get('source') === 'scan' || f.id === 'scan-result';
+          if (isScanOrigin && f.file.type.startsWith('image/')) {
+            const pdfBlob = await convertImagesToPdf([f.file]);
+            fileToUpload = new File([pdfBlob], `${f.name.trim() || 'Document'}.pdf`, { type: 'application/pdf' });
+          }
+
+          const fallbackOcrText = f.metaValues.ocrText || f.metaValues.OcrText;
+
+          await createDocument(
+            {
+              title: f.name.trim(),
+              description: f.description || undefined,
+              folderId: folderId || undefined,
+              libraryId: libId || undefined,
+              requestApproval,
+              approverUserId: requestApproval && selectedValidatorId ? selectedValidatorId : undefined,
+              ocrText: fallbackOcrText,
+              metadata: f.metaValues,
+            },
+            fileToUpload,
+            (pct) => setFiles(prev => prev.map(u => u.id === f.id ? { ...u, progress: pct } : u)),
+          );
+
+          if (fileToUpload !== f.file) {
+            setFiles(prev => prev.map(u => u.id === f.id ? { ...u, file: fileToUpload } : u));
+          }
+
+          setFiles(prev => prev.map(u => u.id === f.id ? { ...u, progress: 100, status: 'success' } : u));
+          activityLogger.log('upload', f.name, user?.fullName ?? 'Utilisateur', 'Document importé');
+          succeeded++;
+        } catch (err: any) {
+          const msg = err?.response?.data?.error?.message || `Échec pour "${f.name}"`;
+          setFiles(prev => prev.map(u => u.id === f.id ? { ...u, status: 'error', errorMsg: msg } : u));
+          toast.error(msg);
+        }
       }
-      
-      sessionStorage.removeItem('edms_last_scan');
-      navigate('/documents');
+
+      if (succeeded > 0) {
+        toast.success(
+          requestApproval
+            ? `${succeeded} document(s) importé(s) et envoyés en attente d'approbation`
+            : `${succeeded} document(s) importé(s) avec succès`
+        );
+      }
+
+      sessionStorage.removeItem('edms_scan_metadata');
+
+      // Navigate back to the library or folder we came from
+      if (libId) navigate(`/documents?lib=${libId}${folderId ? `&folder=${folderId}` : ''}`);
+      else navigate('/documents');
     } catch (error) {
-      console.error("Critical error during finish:", error);
+      console.error('Critical error during upload:', error);
       toast.error("Une erreur est survenue lors de l'enregistrement.");
     }
   };
@@ -293,7 +398,7 @@ export function DocumentUploadPage() {
   return (
     <div className="flex flex-col h-[calc(100vh-120px)] -m-5 bg-background overflow-hidden border border-border rounded-xl shadow-sm">
       <Helmet>
-        <title>Importer des documents — EDMS</title>
+        <title>Importer des documents — ItDoc</title>
       </Helmet>
 
       <input 
@@ -576,6 +681,7 @@ export function DocumentUploadPage() {
                           <input 
                             type="text" 
                             placeholder="Entrez le nom du document"
+                            aria-label="Nom du document"
                             value={activeFile.name}
                             onChange={(e) => updateActiveFile({ name: e.target.value })}
                             className="w-full bg-accent/30 border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
@@ -604,6 +710,7 @@ export function DocumentUploadPage() {
                           <textarea 
                             rows={3}
                             placeholder="Ajoutez une description courte..."
+                            aria-label="Description du document"
                             value={activeFile.description}
                             onChange={(e) => updateActiveFile({ description: e.target.value })}
                             className="w-full bg-accent/30 border border-border rounded-lg px-3 py-2 text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/20"
@@ -620,22 +727,74 @@ export function DocumentUploadPage() {
                         </div>
   
                         <div className="pt-4 space-y-4">
-                           <div className="flex items-center gap-2 pb-2 border-b border-border">
-                             <h3 className="text-xs font-bold text-foreground uppercase tracking-widest">Champs spécifiques</h3>
+                           <div className="flex items-center justify-between gap-2 pb-2 border-b border-border">
+                             <h3 className="text-xs font-bold text-foreground uppercase tracking-widest">Champs spécifiques ({metaFields.length})</h3>
+                             <button
+                               type="button"
+                               onClick={loadMetadataDefinitions}
+                               className="inline-flex items-center gap-1 rounded-md border border-input px-2 py-1 text-[10px] font-semibold text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                               disabled={metaFieldsLoading}
+                             >
+                               <RefreshCw className={`h-3 w-3 ${metaFieldsLoading ? 'animate-spin' : ''}`} />
+                               Rafraichir
+                             </button>
                            </div>
+                           {metaFields.length === 0 && (
+                             <p className="text-xs text-muted-foreground italic">Aucun champ de metadonnee defini. Verifiez que le manager a bien clique sur "Sauvegarder" dans Administration.</p>
+                           )}
                            {metaFields.map(field => (
                               <div key={field.id} className="space-y-1.5">
                                  <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">
-                                    {field.label} {field.required && <span className="text-red-500">*</span>}
+                                    {field.displayName} {field.isRequired && <span className="text-red-500">*</span>}
                                  </label>
-                                 <input 
-                                   type={field.type === 'date' ? 'date' : 'text'}
-                                   value={activeFile.metaValues[field.id] || ''}
-                                   onChange={(e) => updateActiveFile({ 
-                                     metaValues: { ...activeFile.metaValues, [field.id]: e.target.value } 
-                                   })}
-                                   className="w-full bg-accent/30 border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
-                                 />
+                                 {field.fieldType === MetadataFieldType.DropdownList && field.dropdownOptions ? (
+                                   <div className="relative">
+                                     <select
+                                       aria-label={field.displayName}
+                                       value={activeFile.metaValues[getMetaKey(field)] || ''}
+                                       onChange={(e) => updateActiveFile({ metaValues: { ...activeFile.metaValues, [getMetaKey(field)]: e.target.value } })}
+                                       className="w-full appearance-none bg-background border border-input rounded-lg pl-3 pr-9 py-2 text-sm text-foreground shadow-xs transition-colors cursor-pointer hover:bg-accent/20 focus:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/30 focus-visible:border-ring"
+                                       style={{ colorScheme: 'light dark' }}
+                                     >
+                                       <option value="">Choisir…</option>
+                                       {field.dropdownOptions.split(',').map((o: string) => o.trim()).filter(Boolean).map((o: string) => (
+                                         <option key={o} value={o}>{o}</option>
+                                       ))}
+                                     </select>
+                                     <ChevronRight className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground rotate-90" />
+                                   </div>
+                                 ) : field.fieldType === MetadataFieldType.Boolean ? (
+                                   <label className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
+                                     <input
+                                       aria-label={field.displayName}
+                                       type="checkbox"
+                                       checked={activeFile.metaValues[getMetaKey(field)] === 'true'}
+                                       onChange={(e) => updateActiveFile({ metaValues: { ...activeFile.metaValues, [getMetaKey(field)]: String(e.target.checked) } })}
+                                       className="rounded border-input text-primary"
+                                     />
+                                     {field.displayName}
+                                   </label>
+                                 ) : field.fieldType === MetadataFieldType.Date ? (
+                                   <div className="relative">
+                                     <input
+                                       aria-label={field.displayName}
+                                       type="date"
+                                       value={activeFile.metaValues[getMetaKey(field)] || ''}
+                                       onChange={(e) => updateActiveFile({ metaValues: { ...activeFile.metaValues, [getMetaKey(field)]: e.target.value } })}
+                                       className="w-full bg-background border border-input rounded-lg px-3 pr-9 py-2 text-sm text-foreground shadow-xs transition-colors [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:cursor-pointer focus:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/30 focus-visible:border-ring"
+                                       style={{ colorScheme: 'light dark' }}
+                                     />
+                                     <Calendar className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                                   </div>
+                                 ) : (
+                                   <input
+                                     aria-label={field.displayName}
+                                     type={field.fieldType === MetadataFieldType.Number ? 'number' : 'text'}
+                                     value={activeFile.metaValues[getMetaKey(field)] || ''}
+                                     onChange={(e) => updateActiveFile({ metaValues: { ...activeFile.metaValues, [getMetaKey(field)]: e.target.value } })}
+                                     className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm text-foreground shadow-xs transition-colors placeholder:text-muted-foreground/80 focus:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/30 focus-visible:border-ring"
+                                   />
+                                 )}
                               </div>
                            ))}
                         </div>
@@ -669,12 +828,27 @@ export function DocumentUploadPage() {
                               <div className="absolute -left-[23px] top-1.5 w-3 h-3 rounded-full bg-border border-2 border-card z-10" />
                               <div className="space-y-3">
                                  <p className="text-xs font-bold text-foreground">Viser par</p>
-                                 <select className="w-full bg-accent/30 border border-border rounded-lg px-3 py-2 text-sm text-foreground appearance-none cursor-pointer">
-                                    <option>Choisir un validateur...</option>
-                                    <option>Jean Dupont (RH)</option>
-                                    <option>Sara Andrews (Finance)</option>
-                                    <option>Marc Lefebvre (Direction)</option>
+                                 <select
+                                   aria-label="Valideur"
+                                   className="w-full bg-accent/30 border border-border rounded-lg px-3 py-2 text-sm text-foreground appearance-none cursor-pointer disabled:opacity-60"
+                                   value={selectedValidatorId}
+                                   onChange={(e) => setSelectedValidatorId(e.target.value)}
+                                   disabled={!libId || !requestApproval || validators.length === 0}
+                                 >
+                                    <option value="">Assignation automatique (manager de la bibliothèque)</option>
+                                    {validators.map((v) => (
+                                      <option key={v.id} value={v.id}>
+                                        {(v.name || v.surname) ? `${v.name ?? ''} ${v.surname ?? ''}`.trim() : v.userName}
+                                        {v.email ? ` (${v.email})` : ''}
+                                      </option>
+                                    ))}
                                  </select>
+                                 {!requestApproval && (
+                                   <p className="text-[10px] text-muted-foreground">Activez d'abord "Demander approbation" pour choisir un validateur.</p>
+                                 )}
+                                 {requestApproval && validators.length === 0 && (
+                                   <p className="text-[10px] text-muted-foreground">Aucun manager trouvé, assignation automatique utilisée.</p>
+                                 )}
                               </div>
                            </div>
   
@@ -688,11 +862,21 @@ export function DocumentUploadPage() {
                         </div>
   
                         <div className="bg-accent/30 rounded-2xl p-5 border border-border">
-                           <label className="flex items-center gap-2 mb-3">
-                              <input type="checkbox" className="rounded border-border bg-background text-primary" defaultChecked />
-                              <span className="text-xs font-bold text-foreground">Notifier par email</span>
-                           </label>
-                           <p className="text-[10px] text-muted-foreground">Une notification sera envoyée à chaque étape du circuit aux personnes concernées.</p>
+                          <label className="flex items-center gap-2 mb-3">
+                            <input
+                              type="checkbox"
+                              className="rounded border-border bg-background text-primary"
+                              checked={requestApproval}
+                              onChange={(e) => setRequestApproval(e.target.checked)}
+                              disabled={!libId}
+                            />
+                            <span className="text-xs font-bold text-foreground">Demander approbation</span>
+                          </label>
+                          <p className="text-[10px] text-muted-foreground">
+                            {libId
+                             ? "Si activé, le document sera soumis pour révision et le manager propriétaire de la bibliothèque sera notifié."
+                             : "Sélectionnez une bibliothèque pour activer la demande d'approbation."}
+                          </p>
                         </div>
                      </div>
                   </div>

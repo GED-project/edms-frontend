@@ -7,10 +7,8 @@ import {
   LogOut,
   Users,
   ScrollText,
-  Activity,
   ChevronLeft,
   ChevronRight,
-  Wrench,
   FolderOpen,
 } from 'lucide-react';
 import { useAuth } from '@/providers/auth-provider';
@@ -37,13 +35,18 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { label: 'Dashboard', to: '/dashboard', icon: LayoutDashboard },
       { label: 'Document Library', to: '/documents', icon: FolderOpen },
-      { label: 'Activité', to: '/activity', icon: Activity },
+      { label: 'Shared with Me', to: '/documents/shared', icon: FileText },
+      {
+        label: 'Pending Approvals',
+        to: '/documents/approvals',
+        icon: ScrollText,
+        requiredPermission: Permission.APPROVE_DOCUMENT,
+      },
     ],
   },
   {
     title: 'OPERATION',
     items: [
-      { label: 'Rapports', to: '/reports', icon: ScrollText },
       {
         label: 'Administration',
         to: '/admin',
@@ -62,7 +65,6 @@ const NAV_SECTIONS: NavSection[] = [
         icon: FileText,
         requiredPermission: Permission.CONSULTE_AUDIT_LOGS,
       },
-      { label: 'Intégrations', to: '/integrations', icon: Wrench },
     ],
   },
 ];
@@ -115,12 +117,12 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Side
         <div className={`flex items-center gap-3 h-16 border-b border-white/5 shrink-0 ${collapsed ? 'justify-center px-3' : 'px-5'}`}>
           <img
             src={itcompLogo}
-            alt="EDMS"
+            alt="ItDoc"
             className={`shrink-0 ${collapsed ? 'h-8 w-8' : 'h-7 w-7'}`}
           />
           {!collapsed && (
             <div className="min-w-0">
-              <p className="text-sm font-bold text-white tracking-wide truncate">EDMS</p>
+              <p className="text-sm font-bold text-white tracking-wide truncate">ItDoc</p>
               <p className="text-[10px] text-zinc-500 truncate">Enterprise</p>
             </div>
           )}

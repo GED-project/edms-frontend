@@ -12,6 +12,7 @@ import axios from 'axios';
 import { Role, Permission } from '@/lib/auth-rbac/roles';
 import { setAccessToken } from '@/lib/api.client';
 import { apiClient } from '@/lib/api.client';
+import { getCurrentTenantCode } from '@/lib/tenant';
 
 export interface RegisterPayload {
   fullName: string;
@@ -39,10 +40,14 @@ export interface LoginResult {
     fullName: string;
     role: Role;
     permissions: Permission[];
+    tenantId: string | null;
+    tenantCode: string | null;
+    isHost: boolean;
   };
 }
 
 export interface ResetPasswordPayload {
+  email: string;
   token: string;
   password: string;
 }
@@ -116,6 +121,19 @@ function extractRolesFromJwt(token: string): string[] {
   }
 }
 
+/** Returns the `tenantid` claim from the JWT (or null for Host scope). */
+function extractTenantIdFromJwt(token: string): string | null {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    const raw = payload['tenantid']
+      ?? payload['http://schemas.microsoft.com/identity/claims/tenantid'];
+    if (!raw || typeof raw !== 'string' || raw === '') return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // checkEmailAvailability — removed (backend rejects duplicates on register)
 // Kept as a no-op so the register page compiles without changes.
@@ -168,10 +186,19 @@ export async function loginUser(
     params.append('client_id', import.meta.env.VITE_OIDC_CLIENT_ID || 'GedProject_Vue');
     params.append('scope', import.meta.env.VITE_OIDC_SCOPE || 'openid profile email GedProject');
 
+    // Multi-tenancy: tell OpenIddict which tenant to authenticate against.
+    // Derived from the browser URL subdomain (null → Host).
+    const tenantCode = getCurrentTenantCode();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    };
+    if (tenantCode) {
+      params.append('__tenant', tenantCode);
+      headers['__tenant'] = tenantCode;
+    }
+
     const authUrl = import.meta.env.VITE_AUTH_URL || '';
-    const { data } = await axios.post(`${authUrl}/connect/token`, params, {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    });
+    const { data } = await axios.post(`${authUrl}/connect/token`, params, { headers });
 
     const accessToken: string = data.access_token;
     const refreshToken: string | undefined = data.refresh_token;
@@ -183,6 +210,7 @@ export async function loginUser(
     // Decode role from JWT, then fetch display name from profile
     const roles = extractRolesFromJwt(accessToken);
     const { role, permissions } = resolvePermissions(roles);
+    const tenantId = extractTenantIdFromJwt(accessToken);
 
     const profileRes = await apiClient.get<AbpProfileResponse>('/account/my-profile', {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -199,6 +227,9 @@ export async function loginUser(
         fullName,
         role,
         permissions,
+        tenantId,
+        tenantCode,
+        isHost: tenantId === null,
       },
     };
   } catch (err: any) {
@@ -246,8 +277,9 @@ export async function resetPassword(
 ): Promise<{ success: boolean; message: string }> {
   try {
     await apiClient.post('/app/account/reset-password', {
-      resetToken: payload.token,
-      password: payload.password,
+      email: payload.email,
+      token: payload.token,
+      newPassword: payload.password,
     });
     return { success: true, message: 'Votre mot de passe a été modifié avec succès.' };
   } catch (err: any) {

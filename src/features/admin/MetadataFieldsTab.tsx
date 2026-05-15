@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Plus,
   Trash2,
@@ -9,65 +9,285 @@ import {
   List,
   Save,
   AlertCircle,
+  ToggleLeft,
+  Loader2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
-  MetaFieldDefinition,
-  MetaFieldType,
-  loadMetaFields,
-  saveMetaFields,
-} from '@/lib/metadata-store';
+  MetadataFieldType,
+  MetadataDefinitionDto,
+  CreateUpdateMetadataDefinitionInput,
+  getMetadataDefinitions,
+  createMetadataDefinition,
+  updateMetadataDefinition,
+  deleteMetadataDefinition,
+} from './metadata.service';
 
-const TYPE_CONFIG: Record<MetaFieldType, { label: string; icon: React.ElementType; color: string }> = {
-  text:   { label: 'Texte',  icon: Text,     color: 'text-blue-500 bg-blue-500/10' },
-  date:   { label: 'Date',   icon: Calendar,  color: 'text-purple-500 bg-purple-500/10' },
-  number: { label: 'Nombre', icon: Hash,      color: 'text-amber-500 bg-amber-500/10' },
-  list:   { label: 'Liste',  icon: List,      color: 'text-emerald-500 bg-emerald-500/10' },
-};
+// ─── Local UI model ───────────────────────────────────────────────────────────
 
-function newField(): MetaFieldDefinition {
+type UiFieldType = 'text' | 'date' | 'number' | 'list' | 'boolean';
+
+interface UiField {
+  /** undefined = new (not yet saved), string = existing backend id */
+  backendId?: string;
+  tempId: string;
+  label: string;
+  name: string;
+  type: UiFieldType;
+  required: boolean;
+  options: string[];
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function apiTypeToUi(t: MetadataFieldType): UiFieldType {
+  switch (t) {
+    case MetadataFieldType.Text:         return 'text';
+    case MetadataFieldType.Number:       return 'number';
+    case MetadataFieldType.Date:         return 'date';
+    case MetadataFieldType.Boolean:      return 'boolean';
+    case MetadataFieldType.DropdownList: return 'list';
+    default:                             return 'text';
+  }
+}
+
+function uiTypeToApi(t: UiFieldType): MetadataFieldType {
+  switch (t) {
+    case 'text':    return MetadataFieldType.Text;
+    case 'number':  return MetadataFieldType.Number;
+    case 'date':    return MetadataFieldType.Date;
+    case 'boolean': return MetadataFieldType.Boolean;
+    case 'list':    return MetadataFieldType.DropdownList;
+  }
+}
+
+function dtoToUi(dto: MetadataDefinitionDto): UiField {
   return {
-    id: 'meta_' + Math.random().toString(36).substring(2, 9),
-    label: '',
-    type: 'text',
-    required: false,
-    options: [],
-    placeholder: '',
+    backendId: dto.id,
+    tempId: dto.id,
+    label: dto.displayName,
+    name: dto.name,
+    type: apiTypeToUi(dto.fieldType),
+    required: dto.isRequired,
+    options: dto.dropdownOptions
+      ? dto.dropdownOptions.split(',').map((o) => o.trim()).filter(Boolean)
+      : [],
   };
 }
 
-export function MetadataFieldsTab() {
-  const [fields, setFields] = useState<MetaFieldDefinition[]>(loadMetaFields);
-  const [dirty, setDirty] = useState(false);
+function generateInternalName(label: string, tempId: string): string {
+  const normalized = label
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
 
-  const update = (updated: MetaFieldDefinition[]) => {
+  const slug = normalized
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_]/g, '')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  if (slug) return slug;
+
+  const fallback = tempId.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 16);
+  return fallback ? `field_${fallback}` : `field_${Date.now()}`;
+}
+
+function uiToInput(f: UiField): CreateUpdateMetadataDefinitionInput {
+  return {
+    name: f.name || generateInternalName(f.label, f.tempId),
+    displayName: f.label,
+    fieldType: uiTypeToApi(f.type),
+    isRequired: f.required,
+    dropdownOptions: f.type === 'list' && f.options.length > 0
+      ? f.options.join(',')
+      : undefined,
+  };
+}
+
+function newField(): UiField {
+  return {
+    tempId: 'new_' + Math.random().toString(36).substring(2, 9),
+    label: '',
+    name: '',
+    type: 'text',
+    required: false,
+    options: [],
+  };
+}
+
+// ─── TYPE_CONFIG ──────────────────────────────────────────────────────────────
+
+const TYPE_CONFIG: Record<UiFieldType, { label: string; icon: React.ElementType; color: string }> = {
+  text:    { label: 'Texte',    icon: Text,        color: 'text-blue-500 bg-blue-500/10' },
+  date:    { label: 'Date',     icon: Calendar,    color: 'text-purple-500 bg-purple-500/10' },
+  number:  { label: 'Nombre',   icon: Hash,        color: 'text-amber-500 bg-amber-500/10' },
+  list:    { label: 'Liste',    icon: List,        color: 'text-emerald-500 bg-emerald-500/10' },
+  boolean: { label: 'Oui/Non',  icon: ToggleLeft,  color: 'text-pink-500 bg-pink-500/10' },
+};
+
+const METADATA_DRAFT_KEY = 'edms_metadata_fields_draft_v1';
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
+export function MetadataFieldsTab() {
+  const [fields, setFields] = useState<UiField[]>([]);
+  const [originalIds, setOriginalIds] = useState<Set<string>>(new Set());
+  const [deletedIds, setDeletedIds] = useState<string[]>([]);
+  const [dirty, setDirty] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const getApiErrorMessage = (err: unknown, fallback: string) => {
+    const e = err as any;
+    return e?.response?.data?.error?.message
+      || e?.response?.data?.error?.details
+      || e?.message
+      || fallback;
+  };
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await getMetadataDefinitions(0, 200);
+      const serverFields = result.items.map(dtoToUi);
+      setOriginalIds(new Set(serverFields.map((f) => f.backendId!)));
+
+      const rawDraft = localStorage.getItem(METADATA_DRAFT_KEY);
+      if (rawDraft) {
+        try {
+          const parsed = JSON.parse(rawDraft) as { fields?: UiField[]; deletedIds?: string[] };
+          if (Array.isArray(parsed.fields)) {
+            setFields(parsed.fields);
+            setDeletedIds(Array.isArray(parsed.deletedIds) ? parsed.deletedIds : []);
+            setDirty(true);
+            toast.info('Brouillon restaure. Pensez a sauvegarder vos changements.');
+          } else {
+            setFields(serverFields);
+            setDeletedIds([]);
+            setDirty(false);
+          }
+        } catch {
+          setFields(serverFields);
+          setDeletedIds([]);
+          setDirty(false);
+        }
+      } else {
+        setFields(serverFields);
+        setDeletedIds([]);
+        setDirty(false);
+      }
+    } catch {
+      toast.error('Impossible de charger les champs de métadonnées.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (!dirty) return;
+    localStorage.setItem(
+      METADATA_DRAFT_KEY,
+      JSON.stringify({ fields, deletedIds }),
+    );
+  }, [fields, deletedIds, dirty]);
+
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!dirty) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [dirty]);
+
+  const update = (updated: UiField[]) => {
     setFields(updated);
     setDirty(true);
   };
 
-  const addField = () => {
-    update([...fields, newField()]);
+  const addField = () => update([...fields, newField()]);
+
+  const removeField = (tempId: string) => {
+    const f = fields.find((x) => x.tempId === tempId);
+    if (f?.backendId) setDeletedIds((prev) => [...prev, f.backendId!]);
+    update(fields.filter((x) => x.tempId !== tempId));
   };
 
-  const removeField = (id: string) => {
-    update(fields.filter((f) => f.id !== id));
+  const updateField = (tempId: string, patch: Partial<UiField>) => {
+    update(fields.map((f) => (f.tempId === tempId ? { ...f, ...patch } : f)));
   };
 
-  const updateField = (id: string, patch: Partial<MetaFieldDefinition>) => {
-    update(fields.map((f) => (f.id === id ? { ...f, ...patch } : f)));
-  };
-
-  const handleSave = () => {
-    // Validate: all fields must have a non-empty label
+  const handleSave = async () => {
     const invalid = fields.find((f) => !f.label.trim());
     if (invalid) {
       toast.error('Chaque champ doit avoir un libellé.');
       return;
     }
-    saveMetaFields(fields);
-    setDirty(false);
-    toast.success('Champs de métadonnées sauvegardés');
+
+    const generatedNames = fields.map((f) => (f.name || generateInternalName(f.label, f.tempId)).trim());
+    const duplicateName = generatedNames.find((name, index) =>
+      generatedNames.findIndex((n) => n.toLowerCase() === name.toLowerCase()) !== index,
+    );
+    if (duplicateName) {
+      toast.error(`Nom interne duplique detecte: ${duplicateName}. Utilisez des libelles differents.`);
+      return;
+    }
+
+    setSaving(true);
+    try {
+      // Delete removed fields
+      for (const id of deletedIds) {
+        await deleteMetadataDefinition(id);
+      }
+
+      // Create or update remaining fields
+      for (const f of fields) {
+        const input = uiToInput(f);
+        if (f.backendId && originalIds.has(f.backendId)) {
+          await updateMetadataDefinition(f.backendId, input);
+        } else {
+          await createMetadataDefinition(input);
+        }
+      }
+
+      await load(); // reload to get server-assigned IDs
+
+      // Verify that all expected internal names now exist on backend.
+      const expected = new Set(
+        fields.map((f) => (f.name || generateInternalName(f.label, f.tempId)).toLowerCase()),
+      );
+      const verify = await getMetadataDefinitions(0, 500);
+      const actual = new Set(verify.items.map((x) => x.name.toLowerCase()));
+      const missing = Array.from(expected).filter((n) => !actual.has(n));
+
+      if (missing.length > 0) {
+        toast.error(`Sauvegarde incomplete. Champs manquants: ${missing.join(', ')}`);
+        return;
+      }
+
+      localStorage.removeItem(METADATA_DRAFT_KEY);
+      toast.success('Champs de metadonnees sauvegardes');
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Erreur lors de la sauvegarde des champs.'));
+    } finally {
+      setSaving(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Chargement des champs…
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5 max-w-3xl">
@@ -80,11 +300,11 @@ export function MetadataFieldsTab() {
         </div>
         <button
           onClick={handleSave}
-          disabled={!dirty}
+          disabled={!dirty || saving}
           className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-all shadow-sm"
           id="save-meta-fields-btn"
         >
-          <Save className="h-4 w-4" />
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
           Sauvegarder
         </button>
       </div>
@@ -108,11 +328,11 @@ export function MetadataFieldsTab() {
 
         {fields.map((field, idx) => (
           <FieldRow
-            key={field.id}
+            key={field.tempId}
             field={field}
             index={idx}
-            onUpdate={(patch) => updateField(field.id, patch)}
-            onRemove={() => removeField(field.id)}
+            onUpdate={(patch) => updateField(field.tempId, patch)}
+            onRemove={() => removeField(field.tempId)}
           />
         ))}
       </div>
@@ -130,7 +350,7 @@ export function MetadataFieldsTab() {
   );
 }
 
-// ─── Field Row ──────────────────────────────────────────────────────────────
+// ─── Field Row ────────────────────────────────────────────────────────────────
 
 function FieldRow({
   field,
@@ -138,9 +358,9 @@ function FieldRow({
   onUpdate,
   onRemove,
 }: {
-  field: MetaFieldDefinition;
+  field: UiField;
   index: number;
-  onUpdate: (patch: Partial<MetaFieldDefinition>) => void;
+  onUpdate: (patch: Partial<UiField>) => void;
   onRemove: () => void;
 }) {
   const [optionInput, setOptionInput] = useState('');
@@ -148,13 +368,13 @@ function FieldRow({
 
   const addOption = () => {
     const trimmed = optionInput.trim();
-    if (!trimmed || field.options?.includes(trimmed)) return;
-    onUpdate({ options: [...(field.options || []), trimmed] });
+    if (!trimmed || field.options.includes(trimmed)) return;
+    onUpdate({ options: [...field.options, trimmed] });
     setOptionInput('');
   };
 
   const removeOption = (opt: string) => {
-    onUpdate({ options: field.options?.filter((o) => o !== opt) });
+    onUpdate({ options: field.options.filter((o) => o !== opt) });
   };
 
   return (
@@ -175,17 +395,17 @@ function FieldRow({
           onChange={(e) => onUpdate({ label: e.target.value })}
           placeholder={`Libellé du champ ${index + 1}…`}
           className="flex-1 rounded-lg border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50"
-          id={`meta-field-label-${field.id}`}
+          id={`meta-field-label-${field.tempId}`}
         />
 
         {/* Type selector */}
         <select
           value={field.type}
-          onChange={(e) => onUpdate({ type: e.target.value as MetaFieldType, options: e.target.value === 'list' ? [] : undefined })}
+          onChange={(e) => onUpdate({ type: e.target.value as UiFieldType, options: e.target.value === 'list' ? [] : field.options })}
           className="rounded-lg border border-input bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50"
-          id={`meta-field-type-${field.id}`}
+          id={`meta-field-type-${field.tempId}`}
         >
-          {(Object.entries(TYPE_CONFIG) as [MetaFieldType, typeof TYPE_CONFIG[MetaFieldType]][]).map(([key, cfg]) => (
+          {(Object.entries(TYPE_CONFIG) as [UiFieldType, (typeof TYPE_CONFIG)[UiFieldType]][]).map(([key, cfg]) => (
             <option key={key} value={key}>{cfg.label}</option>
           ))}
         </select>
@@ -197,7 +417,7 @@ function FieldRow({
             checked={field.required}
             onChange={(e) => onUpdate({ required: e.target.checked })}
             className="rounded border-input text-primary focus:ring-primary/50 cursor-pointer"
-            id={`meta-field-required-${field.id}`}
+            id={`meta-field-required-${field.tempId}`}
           />
           Obligatoire
         </label>
@@ -207,7 +427,7 @@ function FieldRow({
           onClick={onRemove}
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-red-500/10 hover:text-red-500 transition-colors"
           title="Supprimer ce champ"
-          id={`meta-field-delete-${field.id}`}
+          id={`meta-field-delete-${field.tempId}`}
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
@@ -215,22 +435,6 @@ function FieldRow({
 
       {/* Extra config per type */}
       <div className="pl-11 space-y-3">
-        {/* Placeholder (text/number) */}
-        {(field.type === 'text' || field.type === 'number') && (
-          <div className="space-y-1">
-            <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
-              Placeholder (optionnel)
-            </label>
-            <input
-              type="text"
-              value={field.placeholder || ''}
-              onChange={(e) => onUpdate({ placeholder: e.target.value })}
-              placeholder="Texte indicatif…"
-              className="w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50"
-            />
-          </div>
-        )}
-
         {/* List options */}
         {field.type === 'list' && (
           <div className="space-y-2">
@@ -238,7 +442,7 @@ function FieldRow({
               Options de la liste
             </label>
             <div className="flex flex-wrap gap-1.5">
-              {(field.options || []).map((opt) => (
+              {field.options.map((opt) => (
                 <span
                   key={opt}
                   className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400"
@@ -274,7 +478,15 @@ function FieldRow({
             </div>
           </div>
         )}
+
+        {/* Boolean hint */}
+        {field.type === 'boolean' && (
+          <p className="text-xs text-muted-foreground italic">
+            Ce champ s'affichera comme une case à cocher.
+          </p>
+        )}
       </div>
     </div>
   );
 }
+

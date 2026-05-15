@@ -93,7 +93,7 @@ export function ForgotPasswordPage() {
     return (
       <>
         <Helmet>
-          <title>E-mail envoyé — EDMS Enterprise</title>
+          <title>E-mail envoyé — ItDoc</title>
         </Helmet>
         <div className="flex min-h-screen items-center justify-center bg-background px-4">
           <div className="w-full max-w-md text-center space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-500">
@@ -131,7 +131,7 @@ export function ForgotPasswordPage() {
   return (
     <>
       <Helmet>
-        <title>Mot de passe oublié — EDMS Enterprise</title>
+        <title>Mot de passe oublié — ItDoc</title>
         <meta
           name="description"
           content="Demandez un lien de réinitialisation de mot de passe."
@@ -146,7 +146,7 @@ export function ForgotPasswordPage() {
               <ShieldCheck className="h-4 w-4 text-white" />
             </div>
             <span className="text-sm font-semibold tracking-wide">
-              EDMS Enterprise
+              ItDoc
             </span>
           </div>
           <div className="space-y-4">
@@ -161,7 +161,7 @@ export function ForgotPasswordPage() {
             </p>
           </div>
           <p className="text-xs text-zinc-600">
-            © {new Date().getFullYear()} EDMS Enterprise. Tous droits réservés.
+            © {new Date().getFullYear()} ItDoc. Tous droits réservés.
           </p>
         </div>
 
@@ -184,7 +184,7 @@ export function ForgotPasswordPage() {
                   <ShieldCheck className="h-3.5 w-3.5 text-white" />
                 </div>
                 <span className="text-sm font-semibold text-foreground">
-                  EDMS Enterprise
+                  ItDoc
                 </span>
               </div>
               <h2 className="text-2xl font-bold tracking-tight text-foreground">

@@ -1,90 +1,332 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Helmet } from 'react-helmet-async';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { 
-  X, Download, Trash2, Pencil, Copy, 
-  Search, Plus, Minus, Edit3, Image as ImageIcon,
-  Crop, Info, History, Menu, Share2, Sliders, PenTool, 
-  Eraser, RotateCcw, RotateCw, FileText, ChevronLeft,
-  Calendar, User, Tag, Clock, CheckCircle2, XCircle,
-  MoreVertical, Printer, Send, ShieldCheck, MessageSquare
+  Download, 
+  Plus, Minus,
+  Info, History, Share2,
+  RotateCcw, RotateCw, FileText, ChevronLeft,
+  Calendar, User, Clock, CheckCircle2,
+  MoreVertical, Printer, Send, ShieldCheck, MessageSquare,
+  Image as ImageIcon, Archive, Hand
 } from 'lucide-react';
-import { DocumentRow, DocumentVersion } from './page';
+import { Document as DocxDocument, Packer, Paragraph, TextRun } from 'docx';
+import { DocumentDto, DocumentVersionDto, DocumentState } from './document.service';
+import * as docService from './document.service';
+import { shareRequestService } from './share-request.service';
+import { getShareableUsers, type ShareableUserDto } from '@/features/admin/admin.service';
+import { getMetadataDefinitions, type MetadataDefinitionDto } from '@/features/admin/metadata.service';
 import { useAuth } from '@/providers/auth-provider';
-import { Role } from '@/lib/auth-rbac/roles';
+import { Permission, Role } from '@/lib/auth-rbac/roles';
 import { useDebounce } from '@/lib/use-debounce';
-import { activityLogger, ActivityEntry } from '@/lib/activity-logger';
 import { toast } from 'sonner';
-
-const MOCK_TEXT = `This Project Implementation Agreement ("Agreement") is made and entered into as of [Date], between [Service Provider Name], having its principal place of business at [Address] ("Provider"), and [Client Company Name], having its principal place of business at [Address] ("Client").
-
-Definitions
-• "Project" means the development and deployment of the DMS platform.
-• "Effective Date" means [the date on which the Project agreement is signed by both parties].
-• "Confidential Information" means [definition of what constitutes confidential data].
-
-Scope of Services
-The Service Provider shall design, develop, and implement a web-based ERP system for the Client, including
-• Requirement gathering and system planning
-• Requirement gathering and system planning
-• Requirement gathering and system planning
-• Requirement gathering and system planning
-
-Term and Termination
-Both parties agree to maintain the confidentiality of proprietary information and shall not disclose such information without written consent.`;
 
 export function DocumentViewPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
   
-  const [doc, setDoc] = useState<DocumentRow | null>(null);
+  const [doc, setDoc] = useState<DocumentDto | null>(
+    (location.state as { doc?: DocumentDto } | null)?.doc ?? null
+  );
+  const [versions, setVersions] = useState<DocumentVersionDto[]>([]);
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [imageLoadError, setImageLoadError] = useState(false);
+  const [isLoading, setIsLoading] = useState(!doc);
   const [activeSidebarTab, setActiveSidebarTab] = useState<'metadata' | 'route' | 'history' | 'versions'>('metadata');
-  const [searchQuery, setSearchQuery] = useState('Project');
-  const debouncedSearch = useDebounce(searchQuery, 300);
-  const [showFind, setShowFind] = useState(true);
-  
-  // Load document from local storage
+  const [metadataDefinitions, setMetadataDefinitions] = useState<MetadataDefinitionDto[]>([]);
+  const [ocrText, setOcrText] = useState<string>('');
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrError, setOcrError] = useState<string>('');
+  const debouncedSearch = useDebounce('Project', 300);
+
+  // Load document from API if not passed via navigation state
   useEffect(() => {
-    const saved = localStorage.getItem('edms_documents_v2');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved) as DocumentRow[];
-        const found = parsed.find(n => n.id === id);
-        if (found) {
-          setDoc(found);
-        } else {
-          toast.error("Document non trouvé");
-          navigate('/documents');
-        }
-      } catch (e) {
+    if (!id) { navigate('/documents'); return; }
+    if (doc) { setIsLoading(false); return; }
+    docService.getDocumentPreview(id)
+      .then(preview => {
+        setDoc({ id: preview.id, title: preview.title, state: preview.state, clearanceLevel: 0 as any, creationTime: new Date().toISOString() });
+      })
+      .catch(() => {
+        toast.error('Document non trouvé');
         navigate('/documents');
-      }
-    }
-  }, [id, navigate]);
+      })
+      .finally(() => setIsLoading(false));
+  }, [id]);
 
-  const hasOcr = Boolean((doc?.metadata as any)?.ocrText);
-  const [activeViewerTab, setActiveViewerTab] = useState<'original' | 'ocr'>(hasOcr ? 'ocr' : 'original');
+  // Load file blob for viewing.
+  // Holds the current active blob URL so we can revoke it when done.
+  const blobUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (hasOcr) setActiveViewerTab('ocr');
-  }, [hasOcr]);
+    if (!id) return;
+    // Reset synchronously before the async fetch so the old (potentially
+    // revoked) URL never reaches the <img> element.
+    setBlobUrl(null);
+    setImageLoadError(false);
+    let cancelled = false;
+
+    docService.getFileBlob(id)
+      .then((url) => {
+        if (cancelled) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        // Revoke the previous URL only once we have a valid replacement.
+        if (blobUrlRef.current) {
+          URL.revokeObjectURL(blobUrlRef.current);
+        }
+        blobUrlRef.current = url;
+        setBlobUrl(url);
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+      // Do NOT revoke here — the img element may still be painting.
+      // The ref-based cleanup above handles revocation.
+    };
+  }, [id]);
+
+  // Revoke the active blob URL when the component unmounts.
+  useEffect(() => {
+    return () => {
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = null;
+      }
+    };
+  }, []);
+
+  // Load version history
+  useEffect(() => {
+    if (!id) return;
+    docService.getVersionHistory(id).then(setVersions).catch(() => {});
+  }, [id]);
+
+  useEffect(() => {
+    getMetadataDefinitions(0, 200)
+      .then((result) => setMetadataDefinitions(result.items))
+      .catch(() => setMetadataDefinitions([]));
+  }, []);
+
+  // Derive extension from latest stored version first, then fall back to title.
+  const docExt = useMemo(() => {
+    const versionExt = versions?.[0]?.extension?.replace(/^\./, '').toLowerCase();
+    if (versionExt) return versionExt;
+
+    if (!doc) return '';
+    const parts = doc.title.split('.');
+    return parts.length > 1 ? parts[parts.length - 1].toLowerCase() : '';
+  }, [doc, versions]);
+
+  const [activeViewerTab, setActiveViewerTab] = useState<'original' | 'ocr'>('original');
+  const hasOcr = ocrText.trim().length > 0;
+
+  useEffect(() => {
+    if (!id) return;
+
+    let cancelled = false;
+    setOcrLoading(true);
+    setOcrText('');
+    setOcrError('');
+
+    docService.getOcrText(id)
+      .then((ocr) => {
+        if (cancelled) return;
+        setOcrText(ocr?.ocrText ?? '');
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        setOcrText('');
+        setOcrError(err?.response?.data?.error?.message || 'OCR non disponible pour ce document.');
+      })
+      .finally(() => {
+        if (!cancelled) setOcrLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  useEffect(() => {
+    setActiveViewerTab('original');
+  }, [id]);
+
+  const { hasPermission, hasRole } = useAuth();
+  const isAdminOrManager = hasRole(Role.ADMIN) || hasRole(Role.MANAGER);
+  const canApprove = isAdminOrManager && hasPermission(Permission.APPROVE_DOCUMENT);
+  const isCreator = doc && user?.id
+    ? doc.creatorId?.toLowerCase() === user.id.toLowerCase()
+    : false;
+
+  // Lifecycle action handlers
+  const [lifecycleLoading, setLifecycleLoading] = useState(false);
+  const [requestingAccess, setRequestingAccess] = useState(false);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [shareUsers, setShareUsers] = useState<ShareableUserDto[]>([]);
+  const [shareUsersLoading, setShareUsersLoading] = useState(false);
+  const [shareSearch, setShareSearch] = useState('');
+  const [sharingWithUserId, setSharingWithUserId] = useState<string | null>(null);
+  const approveButtonRef = useRef<HTMLButtonElement | null>(null);
+  const approvalDeepLinkHandledRef = useRef(false);
+  const isApprovalDeepLink = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    return params.get('approve') === '1';
+  }, [location.search]);
+
+  useEffect(() => {
+    if (!doc || approvalDeepLinkHandledRef.current || !isApprovalDeepLink) {
+      return;
+    }
+
+    approvalDeepLinkHandledRef.current = true;
+
+    if (doc.state === DocumentState.Review && canApprove) {
+      setActiveSidebarTab('metadata');
+      setTimeout(() => {
+        approveButtonRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        approveButtonRef.current?.focus();
+      }, 120);
+      toast.info('Ce document attend votre approbation.');
+      return;
+    }
+
+    if (doc.state === DocumentState.Review && !canApprove) {
+      toast.info("Ce document est en attente d'approbation, mais vous n'avez pas les droits pour l'approuver.");
+    }
+  }, [doc, canApprove, isApprovalDeepLink]);
+
+  async function handleSubmitForReview() {
+    if (!doc) return;
+    setLifecycleLoading(true);
+    try {
+      await docService.submitForReview(doc.id);
+      setDoc(prev => prev ? { ...prev, state: DocumentState.Review } : prev);
+      toast.success('Document en attente d\'approbation');
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error?.message || 'Erreur lors de la soumission');
+    } finally {
+      setLifecycleLoading(false);
+    }
+  }
+
+  async function handleApprove() {
+    if (!doc) return;
+    setLifecycleLoading(true);
+    try {
+      await docService.approveDocument(doc.id);
+      setDoc(prev => prev ? { ...prev, state: DocumentState.Approved } : prev);
+      toast.success('Document approuvé');
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error?.message || 'Erreur lors de l\'approbation');
+    } finally {
+      setLifecycleLoading(false);
+    }
+  }
+
+  async function handleArchive() {
+    if (!doc) return;
+    setLifecycleLoading(true);
+    try {
+      await docService.archiveDocument(doc.id);
+      setDoc(prev => prev ? { ...prev, state: DocumentState.Archived } : prev);
+      toast.success('Document archivé');
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error?.message || 'Erreur lors de l\'archivage');
+    } finally {
+      setLifecycleLoading(false);
+    }
+  }
+
+  async function handleRequestAccess() {
+    if (!doc || !id) return;
+    setRequestingAccess(true);
+    try {
+      await shareRequestService.requestAccess(id);
+      toast.success('Demande d\'accès envoyée. En attente d\'approbation.');
+    } catch (err: any) {
+      const msg =
+        err?.response?.data?.error?.message ||
+        err?.response?.data?.message ||
+        err?.message ||
+        'Erreur lors de la demande d\'accès';
+
+      if (typeof msg === 'string' && msg.toLowerCase().includes('deja acces')) {
+        toast.info(msg);
+      } else {
+        toast.error(msg);
+      }
+    } finally {
+      setRequestingAccess(false);
+    }
+  }
+
+  async function handleOpenShareModal() {
+    setShareModalOpen(true);
+    setShareUsersLoading(true);
+    setShareSearch('');
+    try {
+      const users = await getShareableUsers();
+      setShareUsers(users);
+    } catch {
+      toast.error('Impossible de charger les utilisateurs partageables');
+      setShareModalOpen(false);
+    } finally {
+      setShareUsersLoading(false);
+    }
+  }
+
+  async function handleRequestShareForUser(targetUserId: string) {
+    if (!id) return;
+    setSharingWithUserId(targetUserId);
+    try {
+      await shareRequestService.requestAccess(id, undefined, 'read', targetUserId);
+      const target = shareUsers.find((u) => u.id === targetUserId);
+      toast.success(`Demande envoyee au proprietaire pour partager avec ${target?.userName ?? 'cet utilisateur'}.`);
+      setShareModalOpen(false);
+    } catch (err: any) {
+      const msg =
+        err?.response?.data?.error?.message ||
+        err?.response?.data?.message ||
+        err?.message ||
+        'Erreur lors de la demande de partage';
+
+      if (typeof msg === 'string' && msg.toLowerCase().includes('deja acces')) {
+        toast.info(msg);
+        setShareModalOpen(false);
+      } else {
+        toast.error(msg);
+      }
+    } finally {
+      setSharingWithUserId(null);
+    }
+  }
 
   const viewType = useMemo(() => {
     if (!doc) return 'document';
-    const ext = doc.extension?.toLowerCase() || '';
-    if (ext === 'pdf') return 'pdf';
-    if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) return 'image';
+    if (docExt === 'pdf') return 'pdf';
+    if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(docExt)) return 'image';
     return 'document';
-  }, [doc]);
+  }, [doc, docExt]);
 
-  // Activity history for this specific document
-  const docActivity = useMemo(() => {
-    if (!doc) return [];
-    return activityLogger.getAll().filter(log => log.documentName === doc.name);
-  }, [doc]);
+  const dynamicMetadata = useMemo(() => {
+    const raw = (doc as any)?.extraProperties as Record<string, unknown> | undefined;
+    if (!raw) return [] as Array<{ label: string; value: string }>;
 
-  if (!doc) return null;
+    return metadataDefinitions
+      .map((def) => {
+        const value = raw[def.name];
+        if (value === null || value === undefined || String(value).trim() === '') return null;
+        return { label: def.displayName, value: String(value) };
+      })
+      .filter((item): item is { label: string; value: string } => item !== null);
+  }, [doc, metadataDefinitions]);
+
+  if (isLoading || !doc) return null;
 
   const renderHighlightedDocText = (text: string, query: string) => {
     if (!query.trim()) return <span>{text}</span>;
@@ -100,10 +342,56 @@ export function DocumentViewPage() {
     );
   };
 
+  const handleExportOcrDocx = async () => {
+    if (!hasOcr) {
+      toast.error('Aucun contenu OCR disponible pour export DOCX.');
+      return;
+    }
+
+    try {
+      const lines = ocrText
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line, index, arr) => line.length > 0 || (index > 0 && arr[index - 1].length > 0));
+
+      const paragraphs = [
+        new Paragraph({
+          children: [new TextRun({ text: doc.title, bold: true, size: 30 })],
+          spacing: { after: 240 },
+        }),
+        ...lines.map((line) =>
+          new Paragraph({
+            children: [new TextRun({ text: line })],
+            spacing: { after: 120 },
+          })
+        ),
+      ];
+
+      const exportDoc = new DocxDocument({
+        sections: [{ children: paragraphs }],
+      });
+
+      const blob = await Packer.toBlob(exportDoc);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${doc.title.replace(/\.[^.]+$/, '')}_ocr.docx`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(url);
+
+      toast.success('DOCX éditable téléchargé');
+    } catch (err) {
+      console.error('DOCX export failed', err);
+      toast.error('Erreur lors de l\'export DOCX');
+    }
+  };
+
   return (
     <div className="flex flex-col h-[calc(100vh-120px)] -m-5 bg-background overflow-hidden border border-border rounded-xl shadow-sm">
       <Helmet>
-        <title>{doc.name} — EDMS Viewer</title>
+        <title>{doc.title} — ItDoc Viewer</title>
       </Helmet>
 
       {/* Header Toolbar */}
@@ -125,8 +413,8 @@ export function DocumentViewPage() {
               {viewType === 'image' ? <ImageIcon className="h-4 w-4" /> : <FileText className="h-4 w-4" />}
             </div>
             <div>
-              <h1 className="text-sm font-semibold text-foreground truncate max-w-[300px]">{doc.name}</h1>
-              <p className="text-[11px] text-muted-foreground">Version {doc.versions ? doc.versions[0].version : '1.0'}</p>
+              <h1 className="text-sm font-semibold text-foreground truncate max-w-[300px]">{doc.title}</h1>
+              <p className="text-[11px] text-muted-foreground">Version {versions.length > 0 ? versions[0].versionNumber : '1'}.0</p>
             </div>
           </div>
         </div>
@@ -143,13 +431,53 @@ export function DocumentViewPage() {
           </div>
 
           <div className="flex items-center gap-1.5">
-            <button className="p-2 hover:bg-accent rounded-lg text-muted-foreground hover:text-foreground transition-colors" title="Télécharger">
+            <button className="p-2 hover:bg-accent rounded-lg text-muted-foreground hover:text-foreground transition-colors" title="Télécharger"
+              onClick={async () => {
+                try {
+                  await docService.downloadDocument(doc.id, doc.title);
+                  toast.success(`Téléchargement de ${doc.title}...`);
+                } catch (err: any) {
+                  toast.error(err?.response?.data?.error?.message || 'Erreur lors du téléchargement');
+                }
+              }}
+            >
               <Download className="h-4 w-4" />
+            </button>
+            <button
+              className="p-2 hover:bg-accent rounded-lg text-muted-foreground hover:text-foreground transition-colors"
+              title="Télécharger OCR (.txt)"
+              onClick={async () => {
+                try {
+                  await docService.downloadOcrFile(doc.id, `${doc.title}_ocr.txt`);
+                  toast.success('Fichier OCR téléchargé');
+                } catch (err: any) {
+                  toast.error(err?.response?.data?.error?.message || 'OCR indisponible pour ce document');
+                }
+              }}
+            >
+              <FileText className="h-4 w-4" />
+            </button>
+            <button
+              className="p-2 hover:bg-accent rounded-lg text-muted-foreground hover:text-foreground transition-colors"
+              title="Exporter OCR en DOCX"
+              onClick={handleExportOcrDocx}
+            >
+              <Archive className="h-4 w-4" />
             </button>
             <button className="p-2 hover:bg-accent rounded-lg text-muted-foreground hover:text-foreground transition-colors" title="Imprimer">
               <Printer className="h-4 w-4" />
             </button>
-            <button className="p-2 hover:bg-accent rounded-lg text-muted-foreground hover:text-foreground transition-colors" title="Partager">
+            <button
+              className="p-2 hover:bg-accent rounded-lg text-muted-foreground hover:text-foreground transition-colors"
+              title="Partager"
+              onClick={() => {
+                if (blobUrl) {
+                  void handleOpenShareModal();
+                  return;
+                }
+                void handleRequestAccess();
+              }}
+            >
               <Share2 className="h-4 w-4" />
             </button>
             <div className="w-px h-6 bg-border mx-1" />
@@ -174,15 +502,13 @@ export function DocumentViewPage() {
                 Document original
                 {activeViewerTab === 'original' && <span className="absolute bottom-0 left-0 w-full h-0.5 bg-primary" />}
               </button>
-              {hasOcr && (
-                <button 
-                  onClick={() => setActiveViewerTab('ocr')}
-                  className={`text-xs font-semibold relative h-12 transition-colors ${activeViewerTab === 'ocr' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
-                >
-                  Contenu extrait (OCR)
-                  {activeViewerTab === 'ocr' && <span className="absolute bottom-0 left-0 w-full h-0.5 bg-primary" />}
-                </button>
-              )}
+              <button 
+                onClick={() => setActiveViewerTab('ocr')}
+                className={`text-xs font-semibold relative h-12 transition-colors ${activeViewerTab === 'ocr' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                Contenu extrait (OCR)
+                {activeViewerTab === 'ocr' && <span className="absolute bottom-0 left-0 w-full h-0.5 bg-primary" />}
+              </button>
             </div>
             
             <div className="flex items-center gap-4">
@@ -203,107 +529,86 @@ export function DocumentViewPage() {
                     Contenu Extrait (OCR)
                   </h1>
                   <div className="prose prose-zinc dark:prose-invert max-w-none text-muted-foreground leading-loose font-mono text-sm">
-                    {renderHighlightedDocText(MOCK_TEXT, debouncedSearch)}
+                    {ocrLoading
+                      ? 'Chargement OCR...'
+                      : hasOcr
+                      ? renderHighlightedDocText(ocrText, debouncedSearch)
+                      : (ocrError || 'Aucun contenu OCR disponible pour ce document.')}
                   </div>
+                </div>
+             ) : !blobUrl ? (
+                <div className="w-full max-w-[800px] bg-card p-16 shadow-xl border border-border min-h-[400px] flex flex-col items-center justify-center gap-3 animate-in fade-in duration-500">
+                  <FileText className="h-10 w-10 text-muted-foreground/40" />
+                  <p className="text-sm text-muted-foreground">Chargement du document...</p>
                 </div>
              ) : viewType === 'pdf' ? (
-                <div className="w-full max-w-[850px] bg-white dark:bg-zinc-800 p-16 shadow-2xl border border-border min-h-[1100px] relative animate-in fade-in slide-in-from-bottom-4 duration-500">
-                  {/* Mock PDF Content */}
-                  <div className="flex items-center justify-between border-b-2 border-primary/20 pb-8 mb-12">
-                     <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 rounded-2xl bg-primary flex items-center justify-center text-white font-black text-xl italic shadow-lg shadow-primary/20">IT</div>
-                        <div>
-                          <h2 className="text-xl font-black text-foreground tracking-tight italic uppercase">ITCOMP EDMS</h2>
-                          <p className="text-[10px] text-muted-foreground font-bold tracking-[0.2em] uppercase">Solutions Numériques</p>
-                        </div>
-                     </div>
-                     <div className="text-right">
-                        <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-1">Invoice / Report</p>
-                        <p className="text-lg font-bold text-foreground">#EDMS-2025-042</p>
-                     </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-12 mb-16">
-                    <div className="space-y-4">
-                      <div>
-                        <p className="text-[10px] font-bold text-primary uppercase tracking-widest mb-1">From</p>
-                        <p className="text-sm font-bold text-foreground">James Doe</p>
-                        <p className="text-[11px] text-muted-foreground leading-relaxed">Chief Director<br/>45-1, Anson Road Singapore - 8989</p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] font-bold text-primary uppercase tracking-widest mb-1">Contact</p>
-                        <p className="text-[11px] text-muted-foreground">james@dreamstudio.com<br/>+880 1234 567 89</p>
-                      </div>
-                    </div>
-                    <div className="text-right space-y-4">
-                       <div>
-                        <p className="text-[10px] font-bold text-primary uppercase tracking-widest mb-1">Issue Date</p>
-                        <p className="text-sm font-bold text-foreground">10 September, 2025</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="space-y-8 text-sm text-foreground/80 leading-relaxed text-justify mb-20">
-                    <p>
-                      This project implementation document outlines the strategic deployment of the Enterprise Document Management System (EDMS). 
-                      The objective is to provide a comprehensive framework for digitizing corporate records and optimizing cross-departmental workflows.
-                    </p>
-                    <p>
-                      The architecture leverages a hybrid cloud approach, ensuring both high availability and strict data residency compliance. 
-                      Encryption protocols at rest and in transit are implemented to safeguard sensitive intellectual property.
-                    </p>
-                    <p>
-                      Phase 1 focuses on the migration of legacy archives from the HR and Finance departments. 
-                      Automated classification via AI-driven OCR allows for instantaneous indexing and searchability.
-                    </p>
-                  </div>
-
-                  <div className="flex justify-end pt-20">
-                    <div className="text-center w-48">
-                       <div className="h-1 bg-border w-full mb-2" />
-                       <p className="text-[11px] font-serif italic text-muted-foreground">Authorized Signature</p>
-                       <p className="text-[10px] font-bold text-foreground uppercase mt-1 tracking-widest">Global Operations</p>
-                    </div>
-                  </div>
-                  
-                  {/* Decorative element */}
-                  <div className="absolute bottom-0 left-0 w-full h-2 bg-primary/30" />
+                <div className="w-full max-w-[1000px] bg-white dark:bg-zinc-800 shadow-2xl border border-border h-[calc(100vh-220px)] animate-in fade-in slide-in-from-bottom-4 duration-500">
+                  <iframe
+                    src={blobUrl}
+                    title={doc.title}
+                    className="w-full h-full border-0"
+                  />
                 </div>
              ) : viewType === 'image' ? (
-                <div className="flex-1 flex flex-col items-center justify-center p-8 animate-in fade-in zoom-in duration-500">
-                  <div className="relative border-4 border-primary rounded-xl overflow-hidden shadow-2xl bg-card">
-                    <img 
-                      src="https://images.unsplash.com/photo-1498050108023-c5249f4df085?auto=format&fit=crop&q=80&w=1200" 
-                      alt={doc.name} 
-                      className="max-w-full max-h-[70vh] object-contain block" 
-                    />
-                    <div className="absolute inset-0 pointer-events-none border border-white/20 rounded-lg" />
+                imageLoadError ? (
+                  <div className="w-full max-w-[900px] bg-card shadow-xl border border-border h-[calc(100vh-220px)] flex flex-col items-center justify-center p-10 gap-4 animate-in fade-in duration-500">
+                    <ImageIcon className="h-14 w-14 text-muted-foreground/40" />
+                    <p className="text-sm text-muted-foreground text-center max-w-sm">
+                      Impossible d'afficher l'image dans l'aperçu intégré.
+                    </p>
+                    <button
+                      onClick={async () => {
+                        try {
+                          await docService.downloadDocument(doc.id, doc.title);
+                          toast.success(`Téléchargement de ${doc.title}...`);
+                        } catch (err: any) {
+                          toast.error(err?.response?.data?.error?.message || 'Erreur lors du téléchargement');
+                        }
+                      }}
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground text-xs font-bold rounded-lg hover:bg-primary/90 transition-all"
+                    >
+                      <Download className="h-4 w-4" />
+                      Télécharger pour visualiser
+                    </button>
                   </div>
-                  
-                  <div className="mt-12 flex flex-col items-center w-full max-w-md">
-                    <span className="text-xs font-bold text-foreground mb-4 bg-accent px-3 py-1 rounded-full shadow-sm">0° Rotation</span>
-                    <div className="w-full flex items-center justify-between px-2">
-                      {[...Array(21)].map((_, i) => (
-                        <div key={i} className={`rounded-full transition-colors ${i === 10 ? 'h-4 w-1 bg-primary' : 'w-1 h-1 bg-muted-foreground/30'}`} />
-                      ))}
-                    </div>
-                    <div className="flex items-center gap-6 mt-8">
-                      <button className="p-3 bg-card border border-border rounded-full text-muted-foreground hover:text-primary hover:border-primary/50 transition-all shadow-sm">
-                        <RotateCcw className="h-5 w-5" />
-                      </button>
-                      <button className="p-3 bg-card border border-border rounded-full text-muted-foreground hover:text-primary hover:border-primary/50 transition-all shadow-sm">
-                        <RotateCw className="h-5 w-5" />
-                      </button>
+                ) : (
+                  <div className="flex-1 w-full p-6 animate-in fade-in zoom-in duration-500">
+                    <div className="h-full w-full rounded-xl border border-border bg-card overflow-hidden shadow-xl">
+                      <img
+                        src={blobUrl}
+                        alt={doc.title}
+                        className="w-full h-full object-contain bg-black/5 dark:bg-black/20"
+                        onError={() => setImageLoadError(true)}
+                      />
                     </div>
                   </div>
-                </div>
+                )
              ) : (
-                <div className="w-full max-w-[800px] bg-card p-16 shadow-xl border border-border min-h-[1000px] animate-in fade-in slide-in-from-bottom-4 duration-500">
-                  <h1 className="text-lg font-bold text-center text-foreground mb-12 uppercase tracking-widest">
-                    {doc.name}
-                  </h1>
-                  <div className="prose prose-zinc dark:prose-invert max-w-none text-foreground/80 leading-loose">
-                    {renderHighlightedDocText(MOCK_TEXT, debouncedSearch)}
+                <div className="w-full max-w-[900px] bg-card shadow-xl border border-border h-[calc(100vh-220px)] flex flex-col animate-in fade-in slide-in-from-bottom-4 duration-500">
+                  <div className="px-6 py-4 border-b border-border flex items-center gap-3 shrink-0">
+                    <FileText className="h-5 w-5 text-muted-foreground" />
+                    <h1 className="text-sm font-semibold text-foreground truncate">{doc.title}</h1>
+                  </div>
+                  <div className="flex-1 flex flex-col items-center justify-center p-10 gap-4">
+                    <FileText className="h-16 w-16 text-muted-foreground/30" />
+                    <p className="text-sm text-muted-foreground text-center max-w-sm">
+                      L'aperçu intégré n'est pas disponible pour ce type de fichier
+                      {docExt ? ` (.${docExt})` : ''}.
+                    </p>
+                    <button
+                      onClick={async () => {
+                        try {
+                          await docService.downloadDocument(doc.id, doc.title);
+                          toast.success(`Téléchargement de ${doc.title}...`);
+                        } catch (err: any) {
+                          toast.error(err?.response?.data?.error?.message || 'Erreur lors du téléchargement');
+                        }
+                      }}
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground text-xs font-bold rounded-lg hover:bg-primary/90 transition-all"
+                    >
+                      <Download className="h-4 w-4" />
+                      Télécharger pour visualiser
+                    </button>
                   </div>
                 </div>
              )}
@@ -350,28 +655,47 @@ export function DocumentViewPage() {
                   {/* Status & Quick Actions */}
                   <div className="flex items-center justify-between">
                      <div className="flex items-center gap-2">
-                        <span className="flex h-2.5 w-2.5 rounded-full bg-amber-500 animate-pulse" />
-                        <span className="text-xs font-bold text-foreground uppercase tracking-wider">En attente</span>
+                        <span className={`flex h-2.5 w-2.5 rounded-full ${
+                          doc.state === DocumentState.Draft ? 'bg-zinc-400' :
+                          doc.state === DocumentState.Review ? 'bg-amber-500 animate-pulse' :
+                          doc.state === DocumentState.Approved ? 'bg-emerald-500' :
+                          doc.state === DocumentState.Archived ? 'bg-zinc-500' : 'bg-red-500'
+                        }`} />
+                        <span className="text-xs font-bold text-foreground uppercase tracking-wider">
+                          {doc.state === DocumentState.Draft ? 'Brouillon' :
+                          doc.state === DocumentState.Review ? 'En attente d\'approbation' :
+                           doc.state === DocumentState.Approved ? 'Approuvé' :
+                           doc.state === DocumentState.Archived ? 'Archivé' : 'Corbeille'}
+                        </span>
                      </div>
                      <div className="flex gap-1.5">
-                        <button 
-                          onClick={() => {
-                            activityLogger.log('approve', doc.name, user?.fullName ?? 'Utilisateur', 'Visé via la vue détaillée');
-                            toast.success("Document visé");
-                          }}
-                          className="px-3 py-1.5 bg-primary/10 text-primary text-[11px] font-bold rounded-lg hover:bg-primary/20 transition-colors"
-                        >
-                           Viser
-                        </button>
-                        <button 
-                          onClick={() => {
-                            activityLogger.log('reject', doc.name, user?.fullName ?? 'Utilisateur', 'Rejeté via la vue détaillée');
-                            toast.error("Document rejeté");
-                          }}
-                          className="px-3 py-1.5 bg-red-500/10 text-red-500 text-[11px] font-bold rounded-lg hover:bg-red-500/20 transition-colors"
-                        >
-                           Rejeter
-                        </button>
+                        {doc.state === DocumentState.Draft && isCreator && (
+                          <button
+                            onClick={handleSubmitForReview}
+                            disabled={lifecycleLoading}
+                            className="px-3 py-1.5 bg-primary/10 text-primary text-[11px] font-bold rounded-lg hover:bg-primary/20 transition-colors disabled:opacity-50"
+                          >
+                            Soumettre
+                          </button>
+                        )}
+                        {doc.state === DocumentState.Review && canApprove && (
+                          <button
+                            onClick={handleApprove}
+                            disabled={lifecycleLoading}
+                            className="px-3 py-1.5 bg-emerald-500/10 text-emerald-600 text-[11px] font-bold rounded-lg hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+                          >
+                            Approuver
+                          </button>
+                        )}
+                        {doc.state === DocumentState.Approved && canApprove && (
+                          <button
+                            onClick={handleArchive}
+                            disabled={lifecycleLoading}
+                            className="px-3 py-1.5 bg-zinc-500/10 text-zinc-600 text-[11px] font-bold rounded-lg hover:bg-zinc-500/20 transition-colors disabled:opacity-50"
+                          >
+                            Archiver
+                          </button>
+                        )}
                      </div>
                   </div>
 
@@ -381,7 +705,7 @@ export function DocumentViewPage() {
                       <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Nom du document</label>
                       <input 
                         type="text" 
-                        value={doc.name} 
+                        value={doc.title}
                         readOnly 
                         className="w-full bg-accent/30 border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none"
                       />
@@ -392,14 +716,14 @@ export function DocumentViewPage() {
                         <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Auteur</label>
                         <div className="flex items-center gap-2 bg-accent/30 border border-border rounded-lg px-3 py-2">
                            <User className="h-3.5 w-3.5 text-muted-foreground" />
-                           <span className="text-sm text-foreground truncate">{doc.author || 'N/A'}</span>
+                           <span className="text-sm text-foreground truncate">{doc.creatorId ? doc.creatorId.slice(0, 8) + '…' : 'N/A'}</span>
                         </div>
                       </div>
                       <div className="space-y-1.5">
                         <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Date de création</label>
                         <div className="flex items-center gap-2 bg-accent/30 border border-border rounded-lg px-3 py-2">
                            <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
-                           <span className="text-sm text-foreground">{doc.date}</span>
+                           <span className="text-sm text-foreground">{new Date(doc.creationTime).toLocaleDateString('fr-FR')}</span>
                         </div>
                       </div>
                     </div>
@@ -409,7 +733,7 @@ export function DocumentViewPage() {
                         <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Index</label>
                         <input 
                           type="text" 
-                          value={doc.id.toUpperCase()} 
+                          value={doc.id.toUpperCase().slice(0, 8)}
                           readOnly 
                           className="w-full bg-accent/30 border border-border rounded-lg px-3 py-2 text-sm text-foreground"
                         />
@@ -418,7 +742,7 @@ export function DocumentViewPage() {
                         <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Type</label>
                         <input 
                           type="text" 
-                          value={doc.type.toUpperCase()} 
+                          value={docExt.toUpperCase() || 'N/A'}
                           readOnly 
                           className="w-full bg-accent/30 border border-border rounded-lg px-3 py-2 text-sm text-foreground"
                         />
@@ -429,24 +753,26 @@ export function DocumentViewPage() {
                       <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Description</label>
                       <textarea 
                         rows={3}
-                        value="Ce document fait partie du dossier de projet 2025. Il contient les clauses techniques et les accords de niveau de service."
+                        value={doc.description || 'Aucune description disponible.'}
                         readOnly
                         className="w-full bg-accent/30 border border-border rounded-lg px-3 py-2 text-sm text-foreground resize-none"
                       />
                     </div>
 
                     <div className="space-y-3">
-                      <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Étiquettes / Tags</label>
-                      <div className="flex flex-wrap gap-1.5">
-                        {(doc.tags || ['Stratégie', 'Confidentiel', '2025']).map(tag => (
-                          <span key={tag} className="px-2.5 py-1 rounded-md bg-primary/5 border border-primary/10 text-primary text-[10px] font-semibold">
-                            {tag}
-                          </span>
-                        ))}
-                        <button className="w-6 h-6 rounded-md border border-dashed border-border flex items-center justify-center text-muted-foreground hover:bg-accent hover:text-foreground">
-                          <Plus className="h-3 w-3" />
-                        </button>
-                      </div>
+                      <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Métadonnées dynamiques</label>
+                      {dynamicMetadata.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">Aucune métadonnée spécifique enregistrée.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {dynamicMetadata.map((item) => (
+                            <div key={item.label} className="rounded-lg border border-border bg-accent/20 px-3 py-2">
+                              <p className="text-[10px] uppercase tracking-widest text-muted-foreground">{item.label}</p>
+                              <p className="text-sm text-foreground mt-0.5 break-words">{item.value}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -457,8 +783,34 @@ export function DocumentViewPage() {
                        <span className="text-xs font-bold uppercase tracking-wider">Sécurité & Accès</span>
                     </div>
                     <p className="text-[11px] text-muted-foreground leading-relaxed">
-                       Ce document est classé <strong>Interne</strong>. Seuls les membres du département Finance et la Direction peuvent y accéder.
+                       Niveau de classification : <strong>{
+                         doc.clearanceLevel === 0 ? 'Public' :
+                         doc.clearanceLevel === 1 ? 'Interne' : 'Confidentiel'
+                       }</strong>.
                     </p>
+                    {!isCreator && !blobUrl && (
+                      <button
+                        onClick={handleRequestAccess}
+                        disabled={requestingAccess}
+                        className="w-full mt-3 flex items-center justify-center gap-2 px-3 py-2 bg-blue-500/10 text-blue-600 dark:text-blue-400 text-xs font-bold rounded-lg hover:bg-blue-500/20 transition-colors disabled:opacity-50"
+                      >
+                        {requestingAccess ? (
+                          <div className="h-3 w-3 animate-spin rounded-full border-2 border-blue-600 dark:border-blue-400 border-t-transparent" />
+                        ) : (
+                          <Hand className="h-3.5 w-3.5" />
+                        )}
+                        Demander l'accès
+                      </button>
+                    )}
+                    {!isCreator && !!blobUrl && (
+                      <button
+                        onClick={handleOpenShareModal}
+                        className="w-full mt-3 flex items-center justify-center gap-2 px-3 py-2 bg-amber-500/10 text-amber-700 dark:text-amber-400 text-xs font-bold rounded-lg hover:bg-amber-500/20 transition-colors"
+                      >
+                        <Share2 className="h-3.5 w-3.5" />
+                        Partager avec un utilisateur
+                      </button>
+                    )}
                   </div>
                 </div>
              )}
@@ -530,21 +882,23 @@ export function DocumentViewPage() {
                    <div className="flex items-center justify-between">
                       <h3 className="text-xs font-bold text-foreground uppercase tracking-widest">Versions du document</h3>
                       <span className="text-[10px] font-bold text-muted-foreground bg-accent/50 px-2 py-0.5 rounded">
-                        {(doc.versions || []).length} versions
+                        {versions.length} versions
                       </span>
                    </div>
 
                    <div className="space-y-4">
-                      {(doc.versions || []).map((v, i) => (
+                      {versions.length === 0 ? (
+                        <p className="text-xs text-muted-foreground text-center py-8">Aucune version trouvée.</p>
+                      ) : versions.map((v, i) => (
                          <div key={v.id} className={`p-4 rounded-2xl border transition-all ${i === 0 ? 'border-primary/30 bg-primary/5 shadow-sm' : 'border-border bg-accent/5 hover:bg-accent/10'}`}>
                             <div className="flex items-center justify-between mb-3">
                                <div className="flex items-center gap-2">
                                   <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-black ${i === 0 ? 'bg-primary text-white' : 'bg-accent text-muted-foreground'}`}>
-                                     v{v.version}
+                                     v{v.versionNumber}
                                   </div>
                                   <div>
-                                     <p className="text-[11px] font-bold text-foreground">Version {v.version}</p>
-                                     <p className="text-[9px] text-muted-foreground">{new Date(v.date).toLocaleDateString()} {new Date(v.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                                     <p className="text-[11px] font-bold text-foreground">Version {v.versionNumber}</p>
+                                     <p className="text-[9px] text-muted-foreground">{new Date(v.creationTime).toLocaleDateString('fr-FR')} {new Date(v.creationTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
                                   </div>
                                </div>
                                {i === 0 && (
@@ -553,15 +907,15 @@ export function DocumentViewPage() {
                             </div>
                             <div className="grid grid-cols-2 gap-2 mt-2">
                                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                                  <User className="h-3 w-3" /> {v.author}
+                                  <User className="h-3 w-3" /> N/A
                                </div>
                                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                                  <FileText className="h-3 w-3" /> {v.size}
+                                  <FileText className="h-3 w-3" /> {v.extension?.toUpperCase() || '—'}
                                </div>
                             </div>
                             {i > 0 && (
                                <button 
-                                 onClick={() => toast.info(`Restauration de la version ${v.version} (simulation)`)}
+                                 onClick={() => toast.info(`Restauration de la version ${v.versionNumber} (simulation)`)}
                                  className="w-full mt-3 py-1.5 text-[10px] font-bold text-primary border border-primary/20 rounded-lg hover:bg-primary/5 transition-all"
                                >
                                   Restaurer cette version
@@ -586,34 +940,31 @@ export function DocumentViewPage() {
                 <div className="p-0 animate-in fade-in duration-300">
                   <div className="p-4 border-b border-border bg-accent/10 flex items-center justify-between">
                      <h3 className="text-xs font-bold text-foreground uppercase tracking-widest">Journal des actions</h3>
-                     <span className="text-[10px] text-muted-foreground">{docActivity.length} entrées</span>
+                     <span className="text-[10px] text-muted-foreground">{versions.length} versions</span>
                   </div>
                   <div className="divide-y divide-border/50">
-                    {docActivity.length === 0 ? (
+                    {versions.length === 0 ? (
                       <div className="p-12 text-center">
                         <Clock className="h-8 w-8 text-muted-foreground/30 mx-auto mb-3" />
                         <p className="text-xs text-muted-foreground">Aucun historique disponible pour ce document.</p>
                       </div>
                     ) : (
-                      docActivity.map((log) => (
-                        <div key={log.id} className="p-4 hover:bg-accent/20 transition-colors">
+                      versions.map((v) => (
+                        <div key={v.id} className="p-4 hover:bg-accent/20 transition-colors">
                            <div className="flex items-start gap-3">
                               <div className="mt-0.5 flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-muted-foreground shrink-0">
-                                 {log.action === 'approve' ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" /> : 
-                                  log.action === 'reject' ? <XCircle className="h-3.5 w-3.5 text-red-500" /> : 
-                                  log.action === 'upload' ? <Plus className="h-3.5 w-3.5 text-blue-500" /> :
-                                  <Clock className="h-3.5 w-3.5" />}
+                                 <Clock className="h-3.5 w-3.5" />
                               </div>
                               <div className="flex-1 min-w-0">
                                  <p className="text-xs font-bold text-foreground truncate">
-                                    {log.action.charAt(0).toUpperCase() + log.action.slice(1)}
+                                    Version {v.versionNumber} — {v.extension?.toUpperCase() || '—'}
                                  </p>
                                  <p className="text-[11px] text-muted-foreground mt-0.5">
-                                    {log.user} • {new Date(log.date).toLocaleDateString()}
+                                    {new Date(v.creationTime).toLocaleDateString('fr-FR')}
                                  </p>
-                                 {log.details && (
+                                 {v.fileSize > 0 && (
                                     <p className="text-[10px] bg-accent/40 rounded px-1.5 py-0.5 mt-2 text-muted-foreground inline-block">
-                                       {log.details}
+                                       {(v.fileSize / 1024).toFixed(1)} Ko
                                     </p>
                                  )}
                               </div>
@@ -628,31 +979,131 @@ export function DocumentViewPage() {
 
           {/* Footer Controls */}
           <div className="p-4 border-t border-border bg-card shrink-0">
-             <div className="grid grid-cols-2 gap-3">
-                <button 
-                  onClick={() => {
-                    activityLogger.log('approve', doc.name, user?.fullName ?? 'Utilisateur', 'Approuvé via la vue détaillée');
-                    toast.success("Document approuvé avec succès");
-                  }}
-                  className="flex items-center justify-center gap-2 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-lg shadow-emerald-600/10 transition-all"
-                >
-                   <CheckCircle2 className="h-4 w-4" />
-                   Enregistrer
-                </button>
-                <button 
-                  onClick={() => {
-                    activityLogger.log('reject', doc.name, user?.fullName ?? 'Utilisateur', 'Rejeté via la vue détaillée');
-                    toast.error("Document rejeté");
-                  }}
-                  className="flex items-center justify-center gap-2 py-2.5 border border-border bg-card hover:bg-accent text-foreground text-xs font-bold rounded-xl transition-all"
-                >
-                   <XCircle className="h-4 w-4" />
-                   Rejeter
-                </button>
+             <div className="flex flex-col gap-2">
+                {doc.state === DocumentState.Draft && isCreator && (
+                  <button
+                    onClick={handleSubmitForReview}
+                    disabled={lifecycleLoading}
+                    className="flex items-center justify-center gap-2 py-2.5 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-xl shadow-lg transition-all disabled:opacity-50"
+                  >
+                    <Send className="h-4 w-4" />
+                    Soumettre pour révision
+                  </button>
+                )}
+                {doc.state === DocumentState.Review && canApprove && (
+                  <button
+                    ref={approveButtonRef}
+                    onClick={handleApprove}
+                    disabled={lifecycleLoading}
+                    className="flex items-center justify-center gap-2 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-lg shadow-emerald-600/10 transition-all disabled:opacity-50"
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    Approuver le document
+                  </button>
+                )}
+                {doc.state === DocumentState.Approved && canApprove && (
+                  <button
+                    onClick={handleArchive}
+                    disabled={lifecycleLoading}
+                    className="flex items-center justify-center gap-2 py-2.5 bg-zinc-600 hover:bg-zinc-700 text-white text-xs font-bold rounded-xl transition-all disabled:opacity-50"
+                  >
+                    <Archive className="h-4 w-4" />
+                    Archiver le document
+                  </button>
+                )}
+                {(doc.state === DocumentState.Archived || (doc.state !== DocumentState.Draft && doc.state !== DocumentState.Review && doc.state !== DocumentState.Approved)) && (
+                  <p className="text-center text-xs text-muted-foreground py-2">Aucune action disponible pour cet état.</p>
+                )}
+                {doc.state === DocumentState.Draft && !isCreator && (
+                  <p className="text-center text-xs text-muted-foreground py-2">Seul le créateur peut soumettre ce document.</p>
+                )}
+                {doc.state === DocumentState.Review && !canApprove && (
+                  <p className="text-center text-xs text-muted-foreground py-2">En attente d'approbation par un manager.</p>
+                )}
              </div>
           </div>
         </div>
       </div>
+
+      {shareModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-xl rounded-xl border border-border bg-card shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between border-b border-border px-5 py-4">
+              <div className="flex items-center gap-2">
+                <Share2 className="h-5 w-5 text-primary" />
+                <h2 className="text-base font-semibold text-foreground">Partager ce document</h2>
+              </div>
+              <button
+                onClick={() => setShareModalOpen(false)}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <MoreVertical className="h-5 w-5 rotate-45" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-3">
+              <p className="text-xs text-muted-foreground">
+                Selectionnez l'utilisateur cible. Le proprietaire recevra une demande de validation.
+              </p>
+              <input
+                type="text"
+                value={shareSearch}
+                onChange={(e) => setShareSearch(e.target.value)}
+                placeholder="Rechercher un utilisateur..."
+                className="w-full bg-accent/30 border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none"
+              />
+
+              <div className="max-h-72 overflow-y-auto space-y-1.5">
+                {shareUsersLoading ? (
+                  <div className="p-8 flex items-center justify-center">
+                    <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-r-transparent" />
+                  </div>
+                ) : (
+                  (() => {
+                    const term = shareSearch.trim().toLowerCase();
+                    const currentUserId = user?.id?.toLowerCase();
+                    const candidates = shareUsers
+                      .filter((u) => u.id.toLowerCase() !== currentUserId)
+                      .filter((u) => !term
+                        || u.userName.toLowerCase().includes(term)
+                        || (u.email && u.email.toLowerCase().includes(term))
+                        || (u.name && u.name.toLowerCase().includes(term)));
+
+                    if (candidates.length === 0) {
+                      return (
+                        <p className="text-sm text-muted-foreground text-center py-8">
+                          Aucun utilisateur trouve.
+                        </p>
+                      );
+                    }
+
+                    return candidates.slice(0, 50).map((u) => (
+                      <button
+                        key={u.id}
+                        onClick={() => handleRequestShareForUser(u.id)}
+                        disabled={sharingWithUserId === u.id}
+                        className="w-full flex items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 py-2 text-left hover:border-primary/40 hover:bg-primary/5 transition-all disabled:opacity-50"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-foreground truncate">{u.userName}</p>
+                          {u.email && (
+                            <p className="text-xs text-muted-foreground truncate">{u.email}</p>
+                          )}
+                        </div>
+                        {sharingWithUserId === u.id ? (
+                          <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-r-transparent" />
+                        ) : (
+                          <Share2 className="h-4 w-4 text-primary" />
+                        )}
+                      </button>
+                    ));
+                  })()
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -2,9 +2,9 @@
  * System Roles
  */
 export enum Role {
-  ADMIN = 'Admin',
-  MANAGER = 'Manager',
-  USER = 'Standard User'
+  ADMIN = 'admin',
+  MANAGER = 'manager',
+  USER = 'user'
 }
 
 /**
@@ -50,4 +50,10 @@ export interface AuthenticatedUser {
   fullName: string;
   role: Role;
   permissions: Permission[];
+  /** Null when the user is the platform-level Host admin. */
+  tenantId: string | null;
+  /** Tenant code derived from the URL subdomain (or null on host scope). */
+  tenantCode: string | null;
+  /** Convenience flag — true when tenantId is null (Host admin). */
+  isHost: boolean;
 }

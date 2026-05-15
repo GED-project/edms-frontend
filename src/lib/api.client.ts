@@ -1,4 +1,5 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
+import { getCurrentTenantCode } from './tenant';
 
 // Access Token stored in memory (not localStorage) to mitigate XSS.
 let _accessToken: string | null = null;
@@ -23,6 +24,12 @@ apiClient.interceptors.request.use(
     const token = getAccessToken();
     if (token && config.headers) {
       config.headers.Authorization = `Bearer ${token}`;
+    }
+    // Multi-tenancy: forward the subdomain-derived tenant code so ABP's
+    // HeaderTenantResolveContributor can scope the request.
+    const tenant = getCurrentTenantCode();
+    if (tenant && config.headers) {
+      config.headers['__tenant'] = tenant;
     }
     // ABP anti-forgery: lire le cookie XSRF-TOKEN et l'envoyer dans l'en-tête
     const xsrfToken = document.cookie
@@ -105,7 +112,15 @@ apiClient.interceptors.response.use(
         const response = await axios.post(
           `${import.meta.env.VITE_AUTH_URL || ''}/connect/token`,
           params,
-          { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+          {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              // Forward the tenant code so ABP's OpenIddict pipeline resolves
+              // the correct tenant. Without this the token endpoint runs in host
+              // scope while the refresh token belongs to the sub-tenant → 500.
+              ...(getCurrentTenantCode() ? { '__tenant': getCurrentTenantCode() } : {}),
+            },
+          }
         );
 
         const newAccessToken: string = response.data.access_token;

@@ -26,29 +26,11 @@ import {
   Calendar,
   RefreshCw,
 } from 'lucide-react';
-import { activityLogger, ActivityEntry, ActionType } from '@/lib/activity-logger';
+import type { ActionType, ActivityEntry } from '@/lib/activity-logger';
+import { getActivityLogs, mapBackendEntry } from './activity.service';
 
-// ─── Seed mock data on first run ──────────────────────────────────────────────
-const MOCK_SEED: ActivityEntry[] = [
-  { id: 'seed-1',  action: 'upload',         documentName: 'Rapport_Annuel_2025.pdf',      user: 'Sophie Martin',   date: '2025-05-03T10:30:00Z', details: 'Importé dans la bibliothèque' },
-  { id: 'seed-2',  action: 'approve',        documentName: 'Contrat_Fournisseur_ABC.docx',  user: 'Marc Dupont',     date: '2025-05-03T09:15:00Z', details: 'Validé par le manager' },
-  { id: 'seed-3',  action: 'reject',         documentName: 'Devis_Prestataire_X.xlsx',      user: 'Claire Leclerc',  date: '2025-05-02T16:45:00Z', details: 'Budget dépassé' },
-  { id: 'seed-4',  action: 'view',           documentName: 'Procedure_RH_v3.pdf',           user: 'Julien Bernard',  date: '2025-05-02T14:20:00Z' },
-  { id: 'seed-5',  action: 'upload',         documentName: 'Budget_Q2_2025.xlsx',           user: 'Emma Leroy',      date: '2025-05-02T11:05:00Z', details: 'Importé dans la bibliothèque' },
-  { id: 'seed-6',  action: 'delete',         documentName: 'Ancien_Logo.png',               user: 'Sophie Martin',   date: '2025-05-01T09:30:00Z', details: 'Placé dans la corbeille' },
-  { id: 'seed-7',  action: 'share',          documentName: 'Bilan_Trimestriel.pdf',         user: 'Marc Dupont',     date: '2025-04-30T15:10:00Z', details: 'Partagé avec claire.leclerc@entreprise.fr' },
-  { id: 'seed-8',  action: 'edit',           documentName: 'Rapport_Annuel_2025.pdf',       user: 'Sophie Martin',   date: '2025-04-29T10:00:00Z', details: 'Renommé depuis "Brouillon_Rapport.pdf"' },
-  { id: 'seed-9',  action: 'download',       documentName: 'Procedure_RH_v3.pdf',           user: 'Lisa Chen',       date: '2025-04-28T08:45:00Z' },
-  { id: 'seed-10', action: 'version_restore',documentName: 'Contrat_Fournisseur_ABC.docx',  user: 'Marc Dupont',     date: '2025-04-27T14:30:00Z', details: 'Version 2 restaurée' },
-  { id: 'seed-11', action: 'archive',        documentName: 'Plan_Continuité_2024.pdf',      user: 'Julien Bernard',  date: '2025-04-26T11:20:00Z' },
-  { id: 'seed-12', action: 'create_folder',  documentName: 'Projets 2025',                  user: 'Emma Leroy',      date: '2025-04-25T09:00:00Z' },
-  { id: 'seed-13', action: 'scan',           documentName: 'Facture_Prestataire_Mai.pdf',   user: 'Lisa Chen',       date: '2025-04-24T16:00:00Z', details: 'Document scanné via OCR' },
-  { id: 'seed-14', action: 'restore',        documentName: 'Ancien_Logo.png',               user: 'Sophie Martin',   date: '2025-04-23T10:10:00Z', details: 'Restauré depuis la corbeille' },
-  { id: 'seed-15', action: 'cloud_import',   documentName: 'Specs_Technique_v4.docx',       user: 'Marc Dupont',     date: '2025-04-22T13:45:00Z', details: 'Importé depuis le cloud' },
-  { id: 'seed-16', action: 'bulk_tag',       documentName: '4 document(s)',                 user: 'Claire Leclerc',  date: '2025-04-21T09:30:00Z', details: 'Tags appliqués: finance, budget' },
-  { id: 'seed-17', action: 'bulk_move',      documentName: '3 document(s)',                 user: 'Julien Bernard',  date: '2025-04-20T11:00:00Z', details: 'Déplacés vers le dossier' },
-  { id: 'seed-18', action: 'expiry_set',     documentName: '2 document(s)',                 user: 'Emma Leroy',      date: '2025-04-19T14:20:00Z', details: 'Expiration fixée au 2025-12-31' },
-];
+// ─── Seed mock data on first run ─────────────────────────────────────────────
+// (removed — using backend-only data)
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -102,18 +84,20 @@ function Highlight({ text, query }: { text: string; query: string }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export function ActivityPage() {
-  // Seed mock data once
-  useEffect(() => { activityLogger.seedIfEmpty(MOCK_SEED); }, []);
+  const [allLogs, setAllLogs] = useState<ActivityEntry[]>([]);
+  const [isLoadingBackend, setIsLoadingBackend] = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
-  const [logs, setLogs] = useState<ActivityEntry[]>(() => activityLogger.getAll());
-
-  // Reload when new entries are logged (same tab via BroadcastChannel / storage)
-  useEffect(() => {
-    const unsub = activityLogger.subscribe(() => {
-      setLogs(activityLogger.getAll());
-    });
-    return unsub;
+  const loadLogs = useCallback(() => {
+    setIsLoadingBackend(true);
+    setLoadError(false);
+    getActivityLogs({ maxResultCount: 200 })
+      .then((result) => setAllLogs(result.items.map(mapBackendEntry)))
+      .catch(() => setLoadError(true))
+      .finally(() => setIsLoadingBackend(false));
   }, []);
+
+  useEffect(() => { loadLogs(); }, [loadLogs]);
 
   const [search, setSearch]           = useState('');
   const [filterAction, setFilterAction] = useState<FilterAction>('all');
@@ -124,14 +108,14 @@ export function ActivityPage() {
 
   // Derived: unique users for filter dropdown
   const allUsers = useMemo(
-    () => Array.from(new Set(logs.map(l => l.user))).sort(),
-    [logs]
+    () => Array.from(new Set(allLogs.map(l => l.user))).sort(),
+    [allLogs]
   );
 
   // Filter logic
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
-    return logs.filter(log => {
+    return allLogs.filter(log => {
       const matchSearch = !q ||
         log.documentName.toLowerCase().includes(q) ||
         log.user.toLowerCase().includes(q) ||
@@ -143,7 +127,7 @@ export function ActivityPage() {
       const matchTo     = !dateTo   || logDate <= new Date(dateTo + 'T23:59:59');
       return matchSearch && matchAction && matchUser && matchFrom && matchTo;
     });
-  }, [logs, search, filterAction, filterUser, dateFrom, dateTo]);
+  }, [allLogs, search, filterAction, filterUser, dateFrom, dateTo]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paginated  = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -159,12 +143,14 @@ export function ActivityPage() {
     setDateFrom(''); setDateTo(''); setPage(1);
   };
 
-  const refresh = () => setLogs(activityLogger.getAll());
+  const refresh = () => {
+    loadLogs();
+  };
 
   return (
     <>
       <Helmet>
-        <title>Activité — EDMS Enterprise</title>
+        <title>Activité — ItDoc</title>
         <meta name="description" content="Journal d'activité et historique des actions des utilisateurs." />
       </Helmet>
 
@@ -176,7 +162,8 @@ export function ActivityPage() {
             <h1 className="text-2xl font-bold text-foreground">Historique d'activité</h1>
             <p className="text-sm text-muted-foreground mt-1">
               {filtered.length} événement{filtered.length !== 1 ? 's' : ''} trouvé{filtered.length !== 1 ? 's' : ''}
-              {logs.length !== filtered.length ? ` sur ${logs.length} au total` : ''}
+              {allLogs.length !== filtered.length ? ` sur ${allLogs.length} au total` : ''}
+              {isLoadingBackend && <span className="ml-2 text-xs opacity-60">· chargement…</span>}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -332,7 +319,23 @@ export function ActivityPage() {
 
         {/* Timeline / List */}
         <div className="rounded-xl border border-border bg-card overflow-hidden">
-          {paginated.length === 0 ? (
+          {loadError ? (
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-500/10 text-red-500 mb-3">
+                <XCircle className="h-6 w-6" />
+              </div>
+              <h3 className="text-sm font-semibold text-foreground">Impossible de charger les activités</h3>
+              <p className="text-xs text-muted-foreground mt-1 max-w-sm">
+                Une erreur s'est produite lors du chargement des données.
+              </p>
+              <button
+                onClick={refresh}
+                className="mt-4 text-xs text-primary font-medium hover:underline"
+              >
+                Réessayer
+              </button>
+            </div>
+          ) : paginated.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-center">
               <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted text-muted-foreground mb-3">
                 <Activity className="h-6 w-6" />

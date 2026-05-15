@@ -47,7 +47,8 @@ export interface PagedResult<T> {
 /** GET /api/app/metadata-definition — list all metadata definitions */
 export async function getMetadataDefinitions(skipCount = 0, maxResultCount = 100): Promise<PagedResult<MetadataDefinitionDto>> {
   const { data } = await apiClient.get<PagedResult<MetadataDefinitionDto>>('/app/metadata-definition', {
-    params: { skipCount, maxResultCount },
+    // Add a cache-buster so recently added fields are visible immediately.
+    params: { skipCount, maxResultCount, _ts: Date.now() },
   });
   return data;
 }

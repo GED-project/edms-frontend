@@ -1,41 +1,74 @@
 /**
  * useAvatar — Shared hook for user avatar management.
- * Stores the avatar as a base64 data URL in localStorage.
+ * Stores the avatar as a base64 data URL in localStorage, scoped per user id.
  * When the backend is ready, replace localStorage reads/writes
  * with API calls (GET /api/users/me/avatar, PUT /api/users/me/avatar).
  */
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useAuth } from '@/providers/auth-provider';
 
 const AVATAR_KEY_PREFIX = 'edms_avatar_';
+const LEGACY_AVATAR_KEY = 'edms_avatar_'; // empty-user-id leftover from the old hook
 
-function getAvatarKey(userId: string) {
+// One-time migration: drop the leftover empty-id key so it can't bleed across users.
+try {
+  if (typeof window !== 'undefined' && window.localStorage.getItem(LEGACY_AVATAR_KEY) !== null) {
+    window.localStorage.removeItem(LEGACY_AVATAR_KEY);
+  }
+} catch {
+  /* localStorage unavailable — ignore */
+}
+
+function getAvatarKey(userId: string): string | null {
+  if (!userId) return null;
   return `${AVATAR_KEY_PREFIX}${userId}`;
 }
 
 export function useAvatar() {
   const { user } = useAuth();
+  const userId = user?.id ?? '';
+  const storageKey = getAvatarKey(userId);
 
-  const stored = user
-    ? localStorage.getItem(getAvatarKey(user.id)) ?? null
-    : null;
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(() => {
+    if (!storageKey) return null;
+    return localStorage.getItem(storageKey) ?? null;
+  });
 
-  const [avatarUrl, setAvatarUrl] = useState<string | null>(stored);
+  // Re-read avatar whenever the active user changes (login / logout / switch).
+  useEffect(() => {
+    if (!storageKey) {
+      setAvatarUrl(null);
+      return;
+    }
+    setAvatarUrl(localStorage.getItem(storageKey));
+  }, [storageKey]);
+
+  // Sync across tabs: react to storage events for our key only.
+  useEffect(() => {
+    if (!storageKey) return;
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === storageKey) {
+        setAvatarUrl(e.newValue);
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [storageKey]);
 
   const saveAvatar = useCallback(
     (dataUrl: string) => {
-      if (!user) return;
-      localStorage.setItem(getAvatarKey(user.id), dataUrl);
+      if (!storageKey) return;
+      localStorage.setItem(storageKey, dataUrl);
       setAvatarUrl(dataUrl);
     },
-    [user]
+    [storageKey]
   );
 
   const clearAvatar = useCallback(() => {
-    if (!user) return;
-    localStorage.removeItem(getAvatarKey(user.id));
+    if (!storageKey) return;
+    localStorage.removeItem(storageKey);
     setAvatarUrl(null);
-  }, [user]);
+  }, [storageKey]);
 
   /** Returns initials fallback from fullName */
   const initials = user?.fullName

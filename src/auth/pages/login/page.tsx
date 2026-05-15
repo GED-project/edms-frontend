@@ -121,10 +121,10 @@ export function LoginPage() {
   return (
     <>
       <Helmet>
-        <title>Connexion — EDMS Enterprise</title>
+        <title>Connexion — ItDoc</title>
         <meta
           name="description"
-          content="Connectez-vous à votre espace EDMS Enterprise."
+          content="Connectez-vous à votre espace ItDoc."
         />
       </Helmet>
 
@@ -136,7 +136,7 @@ export function LoginPage() {
               <ShieldCheck className="h-4 w-4 text-white" />
             </div>
             <span className="text-sm font-semibold tracking-wide">
-              EDMS Enterprise
+              ItDoc
             </span>
           </div>
           <div className="space-y-4">
@@ -151,7 +151,7 @@ export function LoginPage() {
             </p>
           </div>
           <p className="text-xs text-zinc-600">
-            © {new Date().getFullYear()} EDMS Enterprise. Tous droits réservés.
+            © {new Date().getFullYear()} ItDoc. Tous droits réservés.
           </p>
         </div>
 
@@ -165,7 +165,7 @@ export function LoginPage() {
                   <ShieldCheck className="h-3.5 w-3.5 text-white" />
                 </div>
                 <span className="text-sm font-semibold text-foreground">
-                  EDMS Enterprise
+                  ItDoc
                 </span>
               </div>
               <h2 className="text-2xl font-bold tracking-tight text-foreground">

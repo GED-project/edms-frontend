@@ -119,7 +119,7 @@ export function RegisterPage() {
   const [showConfirm, setShowConfirm] = React.useState(false);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [serverError, setServerError] = React.useState<string | null>(null);
-  const [registeredEmail, setRegisteredEmail] = React.useState('');
+  const [_registeredEmail, setRegisteredEmail] = React.useState('');
 
   const {
     register,
@@ -192,7 +192,7 @@ export function RegisterPage() {
     return (
       <>
         <Helmet>
-          <title>Compte créé — EDMS Enterprise</title>
+          <title>Compte créé — ItDoc</title>
         </Helmet>
         <div className="flex min-h-screen items-center justify-center bg-background px-4">
           <div className="w-full max-w-md text-center space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-500">
@@ -226,10 +226,10 @@ export function RegisterPage() {
   return (
     <>
       <Helmet>
-        <title>Inscription — EDMS Enterprise</title>
+        <title>Inscription — ItDoc</title>
         <meta
           name="description"
-          content="Créez votre compte EDMS Enterprise pour accéder à votre espace documentaire."
+          content="Créez votre compte ItDoc pour accéder à votre espace documentaire."
         />
       </Helmet>
 
@@ -241,7 +241,7 @@ export function RegisterPage() {
               <ShieldCheck className="h-4 w-4 text-white" />
             </div>
             <span className="text-sm font-semibold tracking-wide">
-              EDMS Enterprise
+              ItDoc
             </span>
           </div>
           <div className="space-y-4">
@@ -256,7 +256,7 @@ export function RegisterPage() {
             </p>
           </div>
           <p className="text-xs text-zinc-600">
-            © {new Date().getFullYear()} EDMS Enterprise. Tous droits réservés.
+            © {new Date().getFullYear()} ItDoc. Tous droits réservés.
           </p>
         </div>
 
@@ -270,7 +270,7 @@ export function RegisterPage() {
                   <ShieldCheck className="h-3.5 w-3.5 text-white" />
                 </div>
                 <span className="text-sm font-semibold text-foreground">
-                  EDMS Enterprise
+                  ItDoc
                 </span>
               </div>
               <h2 className="text-2xl font-bold tracking-tight text-foreground">

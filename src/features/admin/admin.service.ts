@@ -23,6 +23,14 @@ export interface IdentityUserDto {
   roleNames: string[];
 }
 
+export interface ShareableUserDto {
+  id: string;
+  userName: string;
+  name?: string;
+  surname?: string;
+  email?: string;
+}
+
 export interface PagedResult<T> {
   items: T[];
   totalCount: number;
@@ -50,6 +58,7 @@ export interface CreateUserInput {
   password: string;
   roleNames?: string[];
   isActive?: boolean;
+  extraProperties?: Record<string, unknown>;
 }
 
 export interface UpdateUserInput {
@@ -60,6 +69,7 @@ export interface UpdateUserInput {
   password?: string;
   roleNames?: string[];
   isActive?: boolean;
+  extraProperties?: Record<string, unknown>;
 }
 
 // ─── API functions ────────────────────────────────────────────────────────────
@@ -80,6 +90,12 @@ export async function getUsers(input?: GetUsersInput): Promise<PagedResult<Ident
       notActive: input?.notActive,
     },
   });
+  return data;
+}
+
+/** GET /api/app/user-custom/shareable-users */
+export async function getShareableUsers(): Promise<ShareableUserDto[]> {
+  const { data } = await apiClient.get<ShareableUserDto[]>('/app/user-custom/shareable-users');
   return data;
 }
 
@@ -122,10 +138,83 @@ export async function getUserRoles(id: string): Promise<string[]> {
   return data.items.map((r) => r.name);
 }
 
+/** PUT /api/identity/users/{id}/roles — replace user's roles */
+export async function setUserRoles(id: string, roleNames: string[]): Promise<void> {
+  await apiClient.put(`/identity/users/${id}/roles`, { roleNames });
+}
+
+// ─── Permission management ────────────────────────────────────────────────────
+
+export interface PermissionGrantInfo {
+  name: string;
+  displayName: string;
+  parentName: string | null;
+  isGranted: boolean;
+  allowedProviders: string[];
+  grantedProviders: { providerName: string; providerKey: string }[];
+}
+
+export interface PermissionGroupInfo {
+  name: string;
+  displayName: string;
+  permissions: PermissionGrantInfo[];
+}
+
+export interface PermissionListResultDto {
+  entityDisplayName: string;
+  groups: PermissionGroupInfo[];
+}
+
+/** GET /api/permission-management/permissions?providerName=R&providerKey={role} */
+export async function getRolePermissions(roleName: string): Promise<PermissionListResultDto> {
+  const { data } = await apiClient.get<PermissionListResultDto>('/permission-management/permissions', {
+    params: { providerName: 'R', providerKey: roleName },
+  });
+  return data;
+}
+
+/** PUT /api/permission-management/permissions?providerName=R&providerKey={role} */
+export async function updateRolePermissions(
+  roleName: string,
+  permissions: { name: string; isGranted: boolean }[],
+): Promise<void> {
+  await apiClient.put(
+    '/permission-management/permissions',
+    { permissions },
+    { params: { providerName: 'R', providerKey: roleName } },
+  );
+}
+
 /**
  * POST /api/app/user-custom/assign-role
  * Custom endpoint to assign a role to a user.
  */
 export async function assignRole(userId: string, roleName: string): Promise<void> {
   await apiClient.post('/app/user-custom/assign-role', { userId, roleName });
+}
+
+// ─── Tag management ───────────────────────────────────────────────────────────
+
+export interface UserTagsDto {
+  userId: string;
+  userName: string;
+  tags: string[];
+}
+
+/** GET /api/app/user-custom/{userId}/tags */
+export async function getUserTags(userId: string): Promise<UserTagsDto> {
+  const { data } = await apiClient.get<UserTagsDto>(`/app/user-custom/${userId}/tags`);
+  return data;
+}
+
+/** PUT /api/app/user-custom/tags — set (replace) tags for a user */
+export async function setUserTags(userId: string, tags: string[]): Promise<UserTagsDto> {
+  const { data } = await apiClient.put<UserTagsDto>('/app/user-custom/tags', { userId, tags });
+  return data;
+}
+
+/** GET /api/app/user-custom/tags — get all distinct tags across all users */
+export async function getAllTags(): Promise<string[]> {
+  const { data } = await apiClient.get<string[]>('/app/user-custom/tags');
+  return data;
 }

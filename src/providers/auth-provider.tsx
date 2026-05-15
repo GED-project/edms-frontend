@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Role, Permission, AuthenticatedUser } from '@/lib/auth-rbac/roles';
 import { setAccessToken } from '@/lib/api.client';
+import { getCurrentTenantCode } from '@/lib/tenant';
 
 interface AuthContextType {
   user: AuthenticatedUser | null;
@@ -12,6 +13,13 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+function normalizeUserRole(rawRole: unknown): Role {
+  const value = String(rawRole ?? '').toLowerCase();
+  if (value === Role.ADMIN) return Role.ADMIN;
+  if (value === Role.MANAGER) return Role.MANAGER;
+  return Role.USER;
+}
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
@@ -29,7 +37,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Restore user object into state immediately so the UI renders correctly
     try {
-      setUser(JSON.parse(storedUser));
+      const parsed = JSON.parse(storedUser) as Partial<AuthenticatedUser>;
+      const normalized: AuthenticatedUser = {
+        id: String(parsed.id ?? ''),
+        email: String(parsed.email ?? ''),
+        fullName: String(parsed.fullName ?? ''),
+        role: normalizeUserRole(parsed.role),
+        permissions: Array.isArray(parsed.permissions) ? parsed.permissions : [],
+        tenantId: parsed.tenantId ?? null,
+        tenantCode: parsed.tenantCode ?? null,
+        isHost: typeof parsed.isHost === 'boolean' ? parsed.isHost : parsed.tenantId === null,
+      };
+      setUser(normalized);
+      localStorage.setItem('edms_user', JSON.stringify(normalized));
     } catch {
       localStorage.removeItem('edms_user');
       setIsLoading(false);
@@ -43,9 +63,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       client_id: import.meta.env.VITE_OIDC_CLIENT_ID ?? 'GedProject_Vue',
     });
 
+    const tenantCode = getCurrentTenantCode();
+    if (tenantCode) {
+      params.append('__tenant', tenantCode);
+    }
+
+    const refreshHeaders: Record<string, string> = {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    };
+    if (tenantCode) {
+      refreshHeaders['__tenant'] = tenantCode;
+    }
+
     fetch('/connect/token', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: refreshHeaders,
       body: params.toString(),
     })
       .then((res) => {

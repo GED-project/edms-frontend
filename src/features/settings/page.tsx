@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -16,9 +16,18 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useAuth } from '@/providers/auth-provider';
+import { Role } from '@/lib/auth-rbac/roles';
 import { useTheme } from 'next-themes';
 import { toast } from 'sonner';
 import { useAvatar } from '@/lib/useAvatar';
+import {
+  getMyPreferences,
+  updateMyPreferences,
+  updateProfile,
+  changePassword,
+  getProfile,
+  type UserPreferencesDto,
+} from './settings.service';
 
 type SettingsSection = 'profile' | 'security' | 'preferences';
 
@@ -170,13 +179,41 @@ function ProfileSection() {
   const { user } = useAuth();
   const [fullName, setFullName] = useState(user?.fullName ?? '');
   const [language, setLanguage] = useState('fr');
+  const [preferencesSnapshot, setPreferencesSnapshot] = useState<UserPreferencesDto | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // Load profile + preferences so name and language reflect persisted values.
+  useEffect(() => {
+    Promise.all([getProfile(), getMyPreferences()])
+      .then(([p, prefs]) => {
+        setFullName([p.name, p.surname].filter(Boolean).join(' '));
+        setLanguage(prefs.language || 'fr');
+        setPreferencesSnapshot(prefs);
+      })
+      .catch(() => {/* keep local fallback values */});
+  }, []);
 
   const handleSave = async () => {
     setSaving(true);
-    await new Promise((r) => setTimeout(r, 800));
-    setSaving(false);
-    toast.success('Profil mis à jour avec succès');
+    try {
+      const parts = fullName.trim().split(' ');
+      const name = parts[0] ?? '';
+      const surname = parts.slice(1).join(' ') || name;
+      await updateProfile({ name, surname, email: user?.email ?? '' });
+
+      const prefs = preferencesSnapshot ?? await getMyPreferences();
+      await updateMyPreferences({
+        ...prefs,
+        language,
+      });
+      setPreferencesSnapshot({ ...prefs, language });
+
+      toast.success('Profil mis à jour avec succès');
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error?.message || 'Erreur lors de la sauvegarde');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -195,11 +232,11 @@ function ProfileSection() {
         </div>
         <div className="ml-auto">
           <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
-            user?.role === 'Admin' ? 'bg-red-500/10 text-red-500' :
-            user?.role === 'Manager' ? 'bg-indigo-500/10 text-indigo-500' :
+            user?.role === Role.ADMIN ? 'bg-red-500/10 text-red-500' :
+            user?.role === Role.MANAGER ? 'bg-indigo-500/10 text-indigo-500' :
             'bg-blue-500/10 text-blue-500'
           }`}>
-            {user?.role}
+            {user?.role === Role.ADMIN ? 'Admin' : user?.role === Role.MANAGER ? 'Manager' : 'Standard User'}
           </span>
         </div>
       </div>
@@ -260,19 +297,36 @@ function SecuritySection() {
   const [showOld, setShowOld] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [oldPassword, setOldPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
 
   const handleChangePassword = async () => {
+    if (!oldPassword || !newPassword) {
+      toast.error('Veuillez remplir les deux champs');
+      return;
+    }
+    if (newPassword.length < 6) {
+      toast.error('Le nouveau mot de passe doit contenir au moins 6 caractères');
+      return;
+    }
     setSaving(true);
-    await new Promise((r) => setTimeout(r, 900));
-    setSaving(false);
-    setShowModal(false);
-    toast.success('Mot de passe modifié avec succès');
+    try {
+      await changePassword({ currentPassword: oldPassword, newPassword });
+      setSaving(false);
+      setShowModal(false);
+      setOldPassword('');
+      setNewPassword('');
+      toast.success('Mot de passe modifié avec succès');
+    } catch (err: any) {
+      setSaving(false);
+      toast.error(err?.response?.data?.error?.message || 'Erreur lors du changement de mot de passe');
+    }
   };
 
-  const SESSIONS = [
-    { device: 'Chrome · Windows 11', ip: '192.168.1.42', location: 'Paris, France', current: true, time: 'Maintenant' },
-    { device: 'Firefox · macOS', ip: '85.12.45.101', location: 'Lyon, France', current: false, time: 'Il y a 2 jours' },
-  ];
+  const currentSession = {
+    device: typeof navigator !== 'undefined' ? navigator.userAgent : 'Navigateur inconnu',
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Fuseau inconnu',
+  };
 
   return (
     <>
@@ -282,7 +336,7 @@ function SecuritySection() {
           <div className="flex items-center justify-between py-4 border-b border-border">
             <div>
               <p className="text-sm font-medium text-foreground">Mot de passe</p>
-              <p className="text-xs text-muted-foreground">Dernière modification il y a 30 jours.</p>
+              <p className="text-xs text-muted-foreground">Utilisez un mot de passe fort et unique pour votre compte.</p>
             </div>
             <button
               id="change-password-btn"
@@ -297,22 +351,16 @@ function SecuritySection() {
           <div>
             <p className="text-xs font-semibold text-foreground mb-3">Sessions actives</p>
             <div className="space-y-2">
-              {SESSIONS.map((s, i) => (
-                <div key={i} className="flex items-center justify-between rounded-lg border border-border p-3">
-                  <div className="flex items-center gap-3">
-                    <div className={`h-2 w-2 rounded-full ${s.current ? 'bg-emerald-500' : 'bg-zinc-400'}`} />
-                    <div>
-                      <p className="text-xs font-medium text-foreground">{s.device}</p>
-                      <p className="text-[10px] text-muted-foreground">{s.ip} · {s.location} · {s.time}</p>
-                    </div>
+              <div className="flex items-center justify-between rounded-lg border border-border p-3">
+                <div className="flex items-center gap-3">
+                  <div className="h-2 w-2 rounded-full bg-emerald-500" />
+                  <div>
+                    <p className="text-xs font-medium text-foreground">{currentSession.device}</p>
+                    <p className="text-[10px] text-muted-foreground">{currentSession.timeZone} · Maintenant</p>
                   </div>
-                  {s.current ? (
-                    <span className="text-[10px] font-medium text-emerald-500 bg-emerald-500/10 rounded-full px-2 py-0.5">Session actuelle</span>
-                  ) : (
-                    <button className="text-[10px] text-red-500 hover:underline">Révoquer</button>
-                  )}
                 </div>
-              ))}
+                <span className="text-[10px] font-medium text-emerald-500 bg-emerald-500/10 rounded-full px-2 py-0.5">Session actuelle</span>
+              </div>
             </div>
           </div>
         </div>
@@ -325,8 +373,8 @@ function SecuritySection() {
             <h3 className="text-sm font-semibold text-foreground">Changer le mot de passe</h3>
 
             {[
-              { id: 'old-pass', label: 'Mot de passe actuel', show: showOld, toggle: () => setShowOld((v) => !v) },
-              { id: 'new-pass', label: 'Nouveau mot de passe', show: showNew, toggle: () => setShowNew((v) => !v) },
+              { id: 'old-pass', label: 'Mot de passe actuel', show: showOld, toggle: () => setShowOld((v) => !v), value: oldPassword, onChange: (v: string) => setOldPassword(v) },
+              { id: 'new-pass', label: 'Nouveau mot de passe', show: showNew, toggle: () => setShowNew((v) => !v), value: newPassword, onChange: (v: string) => setNewPassword(v) },
             ].map((f) => (
               <div key={f.id} className="space-y-1.5">
                 <label htmlFor={f.id} className="text-xs font-medium text-foreground">{f.label}</label>
@@ -335,6 +383,8 @@ function SecuritySection() {
                     id={f.id}
                     type={f.show ? 'text' : 'password'}
                     placeholder="••••••••"
+                    value={f.value}
+                    onChange={(e) => f.onChange(e.target.value)}
                     className="w-full rounded-lg border border-input bg-background pr-9 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50"
                   />
                   <button
@@ -377,7 +427,21 @@ function PreferencesSection() {
   const { theme, setTheme } = useTheme();
   const [emailNotifs, setEmailNotifs] = useState(true);
   const [approvalNotifs, setApprovalNotifs] = useState(true);
+  const [language, setLanguage] = useState('fr');
   const [saving, setSaving] = useState(false);
+
+  // Load persisted preferences from backend on mount
+  useEffect(() => {
+    getMyPreferences()
+      .then((prefs) => {
+        if (prefs.theme) setTheme(prefs.theme);
+        setLanguage(prefs.language || 'fr');
+        setEmailNotifs(prefs.emailNotifications);
+        setApprovalNotifs(prefs.approvalNotifications);
+      })
+      .catch(() => { /* silent: use local defaults */ });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const THEMES: { value: string; label: string; icon: React.ElementType }[] = [
     { value: 'light', label: 'Clair', icon: Sun },
@@ -387,9 +451,19 @@ function PreferencesSection() {
 
   const handleSave = async () => {
     setSaving(true);
-    await new Promise((r) => setTimeout(r, 700));
-    setSaving(false);
-    toast.success('Préférences sauvegardées');
+    try {
+      await updateMyPreferences({
+        theme: theme ?? 'system',
+        language,
+        emailNotifications: emailNotifs,
+        approvalNotifications: approvalNotifs,
+      });
+      toast.success('Préférences sauvegardées');
+    } catch {
+      toast.error('Erreur lors de la sauvegarde des préférences');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -485,8 +559,8 @@ export function SettingsPage() {
   return (
     <>
       <Helmet>
-        <title>Paramètres — EDMS Enterprise</title>
-        <meta name="description" content="Paramètres de compte et préférences utilisateur EDMS." />
+        <title>Paramètres — ItDoc</title>
+        <meta name="description" content="Paramètres de compte et préférences utilisateur ItDoc." />
       </Helmet>
 
       <div className="max-w-5xl mx-auto">

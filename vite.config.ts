@@ -12,6 +12,10 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    host: true,
+    // Allow access from any *.localhost subdomain for multi-tenancy
+    // (e.g. acme.localhost:5173 → tenant 'acme', localhost:5173 → host).
+    allowedHosts: true,
     proxy: {
       '/api': {
         target: 'https://localhost:44324',

@@ -136,3 +136,4 @@ html {
 @utility container-fluid {
   @apply mx-auto w-full px-4 lg:px-5;
 }
+

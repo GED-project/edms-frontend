@@ -1,20 +1,94 @@
 import React from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
-import { Menu, Bell, Sun, Moon, Monitor, Search, ChevronDown, X, ArrowLeft } from 'lucide-react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Menu, Bell, Sun, Moon, Monitor, Search, ChevronDown, X, ArrowLeft, Wifi, WifiOff } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { useAuth } from '@/providers/auth-provider';
 import { useAvatar } from '@/lib/useAvatar';
 import { useDebounce } from '@/lib/use-debounce';
+import { useSignalR } from '@/providers/signalr-provider';
+import { getDocuments } from '@/features/documents/document.service';
+
+const MAX_NOTIFICATIONS = 10;
+
+type NotificationItem = {
+  text: string;
+  time: string;
+  dot: string;
+  targetUrl?: string;
+};
+
+const UUID_IN_TEXT_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
+
+function normalizeApprovalTargetFromBell(item: NotificationItem): string | undefined {
+  if (!item.targetUrl) return item.targetUrl;
+
+  const looksLikeApproval = /approb/i.test(item.text);
+  const isDocumentRoute = /^\/documents\/[a-f0-9-]+(\?.*)?$/i.test(item.targetUrl);
+  if (!looksLikeApproval || !isDocumentRoute) {
+    return item.targetUrl;
+  }
+
+  try {
+    const [path, query = ''] = item.targetUrl.split('?');
+    const params = new URLSearchParams(query);
+    if (!params.has('approve')) {
+      params.set('approve', '1');
+    }
+    const nextQuery = params.toString();
+    return nextQuery ? `${path}?${nextQuery}` : path;
+  } catch {
+    return item.targetUrl;
+  }
+}
+
+function resolveNotificationTarget(item: NotificationItem): string | undefined {
+  const base = normalizeApprovalTargetFromBell(item);
+
+  if (base) {
+    const documentIdMatch = base.match(UUID_IN_TEXT_RE);
+    if (documentIdMatch?.[0] && /documents?/i.test(base)) {
+      return `/documents/${documentIdMatch[0]}?approve=1`;
+    }
+
+    if (/^https?:\/\//i.test(base)) {
+      try {
+        const parsed = new URL(base);
+        const parsedDocumentIdMatch = parsed.pathname.match(UUID_IN_TEXT_RE);
+        if (parsedDocumentIdMatch?.[0] && /documents?/i.test(parsed.pathname)) {
+          return `/documents/${parsedDocumentIdMatch[0]}?approve=1`;
+        }
+
+        const normalizedPath = parsed.pathname.replace(/^\/document\//i, '/documents/');
+        return `${normalizedPath}${parsed.search}`;
+      } catch {
+        return base;
+      }
+    }
+    const normalizedBase = base.replace(/^\/document\//i, '/documents/');
+    return normalizedBase.startsWith('/') ? normalizedBase : `/${normalizedBase}`;
+  }
+
+  const looksLikeApproval = /approb|approve/i.test(item.text);
+  if (!looksLikeApproval) {
+    return undefined;
+  }
+
+  const idMatch = item.text.match(UUID_IN_TEXT_RE);
+  if (!idMatch?.[0]) {
+    return undefined;
+  }
+
+  return `/documents/${idMatch[0]}?approve=1`;
+}
 
 const PAGE_TITLES: Record<string, string> = {
   '/dashboard': 'Dashboard',
   '/documents': 'Document Library',
+  '/documents/shared': 'Shared with Me',
+  '/documents/approvals': 'Pending Approvals',
   '/admin': 'Administration',
   '/settings': 'Paramètres',
-  '/activity': 'Activité',
-  '/reports': 'Rapports',
   '/audit': 'Audit Log',
-  '/integrations': 'Intégrations',
 };
 
 interface TopbarProps {
@@ -48,51 +122,31 @@ export function Topbar({ onMobileMenuOpen, sidebarCollapsed }: TopbarProps) {
       if (profileRef.current && !profileRef.current.contains(e.target as Node)) setProfileOpen(false);
       if (searchRef.current && !searchRef.current.contains(e.target as Node)) setShowSuggestions(false);
     };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    // Listen on 'click' (not 'mousedown') so inner button onClick handlers fire first.
+    // Using mousedown caused the notification dropdown to unmount before the click landed.
+    document.addEventListener('click', handler);
+    return () => document.removeEventListener('click', handler);
   }, []);
 
-  // Build autocomplete suggestions from localStorage documents
-  const buildSuggestions = React.useCallback((q: string): string[] => {
-    if (!q.trim() || q.length < 2) return [];
-    try {
-      const raw = localStorage.getItem('edms_documents_v2');
-      const docs: Array<{ name: string; type: string; deleted?: boolean; tags?: string[]; metadata?: any }> =
-        raw ? JSON.parse(raw) : [];
-      const lower = q.toLowerCase();
-      const names = docs
-        .filter((d) => !d.deleted && d.type !== 'folder')
-        .map((d) => d.name)
-        .filter((n) => n.toLowerCase().includes(lower));
-        
-      const contents = docs
-        .filter((d) => !d.deleted && d.type !== 'folder')
-        .filter((d) => {
-          const ocrText = (d.metadata as any)?.ocrText || '';
-          return ocrText.toLowerCase().includes(lower);
-        })
-        .map((d) => `📄 Contenu dans: ${d.name}`);
-
-      const tags = Array.from(new Set(docs.flatMap((d) => d.tags ?? [])))
-        .filter((t) => t.toLowerCase().includes(lower))
-        .map((t) => `🏷 ${t}`);
-        
-      return [...new Set([...names, ...contents, ...tags])].slice(0, 7);
-    } catch {
-      return [];
-    }
-  }, []);
-
-  // Update suggestions when debounced value changes
+  // Fetch autocomplete suggestions from backend API
   React.useEffect(() => {
-    const s = buildSuggestions(debouncedSearch);
-    setSuggestions(s);
-    if (s.length > 0 && debouncedSearch.trim().length >= 2) {
-      setShowSuggestions(true);
-    } else {
+    if (!debouncedSearch.trim() || debouncedSearch.length < 2) {
+      setSuggestions([]);
       setShowSuggestions(false);
+      return;
     }
-  }, [debouncedSearch, buildSuggestions]);
+    getDocuments({ title: debouncedSearch.trim(), maxResultCount: 8 })
+      .then((result) => {
+        const names = result.items.map((d) => d.title);
+        setSuggestions(names);
+        if (names.length > 0) setShowSuggestions(true);
+        else setShowSuggestions(false);
+      })
+      .catch(() => {
+        setSuggestions([]);
+        setShowSuggestions(false);
+      });
+  }, [debouncedSearch]);
 
   const commitSearch = React.useCallback((val: string) => {
     let q = val.replace(/^🏷 /, '').trim();
@@ -124,7 +178,7 @@ export function Topbar({ onMobileMenuOpen, sidebarCollapsed }: TopbarProps) {
     }
   };
 
-  const pageTitle = PAGE_TITLES[pathname] ?? 'EDMS';
+  const pageTitle = PAGE_TITLES[pathname] ?? 'ItDoc';
 
   const cycleTheme = () => {
     if (theme === 'light') setTheme('dark');
@@ -134,11 +188,64 @@ export function Topbar({ onMobileMenuOpen, sidebarCollapsed }: TopbarProps) {
 
   const ThemeIcon = theme === 'dark' ? Moon : theme === 'light' ? Sun : Monitor;
 
-  const notifications = [
-    { text: 'Rapport Q1 2025 approuvé par Manager', time: 'il y a 2h', dot: 'bg-green-500' },
-    { text: '3 documents en attente de validation', time: 'il y a 5h', dot: 'bg-amber-500' },
-    { text: 'Nouveau utilisateur enregistré', time: 'hier', dot: 'bg-blue-500' },
-  ];
+  const { isConnected, lastNotification } = useSignalR();
+
+  const notificationsStorageKey = React.useMemo(
+    () => (user?.id ? `edms_realtime_notifications_${user.id}` : 'edms_realtime_notifications_guest'),
+    [user?.id],
+  );
+
+  // Keep notifications after refresh so users can still open recent approval items.
+  const [realtimeNotifs, setRealtimeNotifs] = React.useState<NotificationItem[]>([]);
+
+  React.useEffect(() => {
+    try {
+      const raw = localStorage.getItem(notificationsStorageKey);
+      if (!raw) {
+        setRealtimeNotifs([]);
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        setRealtimeNotifs([]);
+        return;
+      }
+      setRealtimeNotifs(parsed.slice(0, MAX_NOTIFICATIONS));
+    } catch {
+      setRealtimeNotifs([]);
+    }
+  }, [notificationsStorageKey]);
+
+  React.useEffect(() => {
+    try {
+      localStorage.setItem(
+        notificationsStorageKey,
+        JSON.stringify(realtimeNotifs.slice(0, MAX_NOTIFICATIONS)),
+      );
+    } catch {
+      // Ignore storage quota/private mode errors.
+    }
+  }, [notificationsStorageKey, realtimeNotifs]);
+
+  React.useEffect(() => {
+    if (!lastNotification) return;
+    const dotColor =
+      lastNotification.type === 'success' ? 'bg-green-500' :
+      lastNotification.type === 'warning' ? 'bg-amber-500' :
+      lastNotification.type === 'error'   ? 'bg-red-500'   :
+      'bg-blue-500';
+    setRealtimeNotifs((prev) => [
+      {
+        text: `${lastNotification.title}: ${lastNotification.message}`,
+        time: 'à l\'instant',
+        dot: dotColor,
+        targetUrl: lastNotification.targetUrl,
+      },
+      ...prev.slice(0, MAX_NOTIFICATIONS - 1),
+    ]);
+  }, [lastNotification]);
+
+  const notifications = realtimeNotifs;
 
   return (
     <header
@@ -254,37 +361,63 @@ export function Topbar({ onMobileMenuOpen, sidebarCollapsed }: TopbarProps) {
             aria-label="Notifications"
           >
             <Bell className="h-[22px] w-[22px] stroke-[1.5]" />
-            <span className="absolute top-[-2px] right-[-2px] h-2 w-2 rounded-full bg-red-500 border border-white" />
+            {notifications.length > 0 && (
+              <span className="absolute top-[-2px] right-[-2px] h-2 w-2 rounded-full bg-red-500 border border-white" />
+            )}
           </button>
 
           {notifOpen && (
             <div className="absolute right-0 top-10 w-80 rounded-2xl border border-border bg-popover shadow-2xl shadow-black/10 overflow-hidden z-50 animate-in fade-in-0 zoom-in-95">
               <div className="px-4 py-3 border-b border-border flex items-center justify-between">
                 <p className="text-sm font-semibold text-foreground">Notifications</p>
-                <span className="text-[10px] font-medium bg-primary/10 text-primary px-2 py-0.5 rounded-full">
-                  {notifications.length} new
-                </span>
+                <div className="flex items-center gap-2">
+                  <span title={isConnected ? 'Temps réel connecté' : 'Temps réel déconnecté'}>
+                    {isConnected
+                      ? <Wifi className="h-3.5 w-3.5 text-emerald-500" />
+                      : <WifiOff className="h-3.5 w-3.5 text-muted-foreground" />}
+                  </span>
+                  {notifications.length > 0 && (
+                    <span className="text-[10px] font-medium bg-primary/10 text-primary px-2 py-0.5 rounded-full">
+                      {notifications.length} new
+                    </span>
+                  )}
+                </div>
               </div>
               <div className="py-1">
-                {notifications.map((n, i) => (
-                  <button
-                    key={i}
-                    className="w-full flex items-start gap-3 px-4 py-3 hover:bg-accent transition-colors text-left"
-                  >
-                    <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${n.dot}`} />
-                    <div>
-                      <p className="text-xs text-foreground leading-snug">{n.text}</p>
-                      <p className="text-[10px] text-muted-foreground mt-1">{n.time}</p>
-                    </div>
-                  </button>
-                ))}
+                {notifications.length === 0 ? (
+                  <p className="px-4 py-6 text-center text-xs text-muted-foreground">
+                    Aucune notification pour l&apos;instant
+                  </p>
+                ) : (
+                  notifications.map((n, i) => {
+                    const to = resolveNotificationTarget(n) ?? '/audit';
+                    return (
+                      <Link
+                        key={i}
+                        to={to}
+                        onClick={() => {
+                          // eslint-disable-next-line no-console
+                          console.debug('[Notif] Link click ->', to, 'item:', n);
+                          setNotifOpen(false);
+                        }}
+                        className="w-full flex items-start gap-3 px-4 py-3 hover:bg-accent transition-colors text-left"
+                      >
+                        <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${n.dot}`} />
+                        <div>
+                          <p className="text-xs text-foreground leading-snug">{n.text}</p>
+                          <p className="text-[10px] text-muted-foreground mt-1">{n.time}</p>
+                        </div>
+                      </Link>
+                    );
+                  })
+                )}
               </div>
               <div className="px-4 py-2 border-t border-border">
                 <button
-                  onClick={() => { navigate('/activity'); setNotifOpen(false); }}
+                  onClick={() => { navigate('/audit'); setNotifOpen(false); }}
                   className="text-xs text-primary font-medium hover:underline"
                 >
-                  Voir toute l&apos;activité →
+                  Ouvrir le journal d&apos;audit →
                 </button>
               </div>
             </div>
