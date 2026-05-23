@@ -21,6 +21,7 @@ export interface IdentityUserDto {
   lockoutEnabled: boolean;
   creationTime: string;
   roleNames: string[];
+  extraProperties?: Record<string, unknown>;
 }
 
 export interface ShareableUserDto {

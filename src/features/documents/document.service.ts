@@ -100,6 +100,9 @@ export interface GetDocumentListInput {
   libraryId?: string | null;
   sharedOnly?: boolean;
   reviewOnly?: boolean;
+  state?: string;
+  dateFrom?: string;
+  dateTo?: string;
 }
 
 export interface CreateDocumentInput {
@@ -131,6 +134,9 @@ export async function getDocuments(input?: GetDocumentListInput): Promise<PagedR
       ...(input?.libraryId != null ? { libraryId: input.libraryId } : {}),
       ...(input?.sharedOnly ? { sharedOnly: true } : {}),
       ...(input?.reviewOnly ? { reviewOnly: true } : {}),
+      ...(input?.state ? { state: input.state } : {}),
+      ...(input?.dateFrom ? { dateFrom: input.dateFrom } : {}),
+      ...(input?.dateTo ? { dateTo: input.dateTo } : {}),
       // tags are repeated query params: tags=a&tags=b
       ...(input?.tags && input.tags.length > 0 ? { tags: input.tags } : {}),
     },
@@ -199,7 +205,6 @@ export async function createDocument(
   }
 
   const { data } = await apiClient.post<DocumentDto>('/app/document/create', form, {
-    headers: { 'Content-Type': 'multipart/form-data' },
     onUploadProgress: (e) => {
       if (onProgress && e.total) {
         onProgress(Math.round((e.loaded / e.total) * 100));
@@ -256,7 +261,6 @@ export async function extractOcrPreview(file: File, signal?: AbortSignal): Promi
   const form = new FormData();
   form.append('file', optimized);
   const { data } = await apiClient.post<OcrPreviewDto>('/app/document/extract-ocr-preview', form, {
-    headers: { 'Content-Type': 'multipart/form-data' },
     signal,
     timeout: 120000,
   });
@@ -330,24 +334,10 @@ export async function downloadDocument(id: string, filename: string, versionNumb
   URL.revokeObjectURL(url);
 }
 
-/** GET /api/app/document/ocr-text/{documentId} */
+/** GET /api/app/document/{documentId}/ocr-text */
 export async function getOcrText(documentId: string): Promise<DocumentOcrTextDto> {
-  try {
-    const { data } = await apiClient.get<DocumentOcrTextDto>(`/app/document/ocr-text/${documentId}`);
-    return data;
-  } catch {
-    try {
-      // Fallback route if a manual controller exposes REST-style path.
-      const { data } = await apiClient.get<DocumentOcrTextDto>(`/app/document/${documentId}/ocr-text`);
-      return data;
-    } catch {
-      // Legacy fallback for conventional query-string route shape.
-      const { data } = await apiClient.get<DocumentOcrTextDto>('/app/document/ocr-text', {
-        params: { documentId },
-      });
-      return data;
-    }
-  }
+  const { data } = await apiClient.get<DocumentOcrTextDto>(`/app/document/${documentId}/ocr-text`);
+  return data;
 }
 
 /** GET /api/app/document/{documentId}/ocr-file */
@@ -477,7 +467,6 @@ export async function addNewVersion(
     `/app/document/new-version/${documentId}`,
     form,
     {
-      headers: { 'Content-Type': 'multipart/form-data' },
       onUploadProgress: (e) => {
         if (onProgress && e.total) {
           onProgress(Math.round((e.loaded / e.total) * 100));
@@ -513,9 +502,32 @@ export async function getTagSuggestions(input: string): Promise<string[]> {
   return data;
 }
 
+/** GET /api/app/document/all-tags — full list of all tags in the system */
+export async function getAllDocumentTags(): Promise<string[]> {
+  const { data } = await apiClient.get<string[]>('/app/document/all-tags');
+  return data;
+}
+
 // ─── Metadata ─────────────────────────────────────────────────────────────────
 
 /** PUT /api/app/document/metadata/{documentId} */
 export async function updateMetadata(documentId: string, metadata: Record<string, string>): Promise<void> {
   await apiClient.put(`/app/document/metadata/${documentId}`, metadata);
+}
+
+// ─── Elasticsearch ────────────────────────────────────────────────────────────
+
+export interface ReindexResult {
+  totalDocuments: number;
+  indexedCount: number;
+  failedCount: number;
+  durationMs: number;
+  message: string;
+  elasticsearchEnabled: boolean;
+}
+
+/** POST /api/app/document/reindex — bulk re-index all documents into Elasticsearch (admin only) */
+export async function reindexDocuments(): Promise<ReindexResult> {
+  const { data } = await apiClient.post<ReindexResult>('/app/document/reindex');
+  return data;
 }

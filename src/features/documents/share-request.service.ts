@@ -3,7 +3,9 @@ import { apiClient } from '@/lib/api.client';
 export interface ShareRequestDto {
   id: string;
   documentId: string;
+  documentTitle: string;
   requesterId: string;
+  requesterName: string;
   targetUserId: string;
   requestedPermissions: string;
   status: 'Pending' | 'Approved' | 'Rejected';

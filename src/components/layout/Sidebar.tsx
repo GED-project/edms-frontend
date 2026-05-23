@@ -6,15 +6,16 @@ import {
   Settings,
   LogOut,
   Users,
-  ScrollText,
   ChevronLeft,
   ChevronRight,
   FolderOpen,
+  Share2,
+  Inbox,
 } from 'lucide-react';
 import { useAuth } from '@/providers/auth-provider';
 import { logoutUser } from '@/auth/services/auth.service';
 import { setAccessToken } from '@/lib/api.client';
-import { Permission } from '@/lib/auth-rbac/roles';
+import { Permission, Role } from '@/lib/auth-rbac/roles';
 import itcompLogo from '@/assets/itcomp-logo.svg';
 
 interface NavItem {
@@ -22,6 +23,7 @@ interface NavItem {
   to: string;
   icon: React.ElementType;
   requiredPermission?: Permission;
+  hideForAdmin?: boolean;
 }
 
 interface NavSection {
@@ -31,21 +33,15 @@ interface NavSection {
 
 const NAV_SECTIONS: NavSection[] = [
   {
-    title: 'MAIN',
+    title: 'PRINCIPAL',
     items: [
-      { label: 'Dashboard', to: '/dashboard', icon: LayoutDashboard },
-      { label: 'Document Library', to: '/documents', icon: FolderOpen },
-      { label: 'Shared with Me', to: '/documents/shared', icon: FileText },
-      {
-        label: 'Pending Approvals',
-        to: '/documents/approvals',
-        icon: ScrollText,
-        requiredPermission: Permission.APPROVE_DOCUMENT,
-      },
+      { label: 'Tableau de bord', to: '/dashboard', icon: LayoutDashboard },
+      { label: 'Bibliothèque de documents', to: '/documents', icon: FolderOpen },
+      { label: 'Partagés avec moi', to: '/shared-with-me', icon: Share2, hideForAdmin: true },
     ],
   },
   {
-    title: 'OPERATION',
+    title: 'OPÉRATION',
     items: [
       {
         label: 'Administration',
@@ -53,14 +49,21 @@ const NAV_SECTIONS: NavSection[] = [
         icon: Users,
         requiredPermission: Permission.MANAGE_USERS,
       },
+      {
+        label: 'Demandes de partage',
+        to: '/admin?tab=share-requests',
+        icon: Inbox,
+        requiredPermission: Permission.APPROVE_SHARING_REQUEST,
+        hideForAdmin: true,
+      },
       { label: 'Paramètres', to: '/settings', icon: Settings },
     ],
   },
   {
-    title: 'SYSTEM',
+    title: 'SYSTÈME',
     items: [
       {
-        label: 'Audit Log',
+        label: "Journal d'audit",
         to: '/audit',
         icon: FileText,
         requiredPermission: Permission.CONSULTE_AUDIT_LOGS,
@@ -77,7 +80,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: SidebarProps) {
-  const { hasPermission, logout } = useAuth();
+  const { hasPermission, hasRole, logout } = useAuth();
   const navigate = useNavigate();
 
   const handleLogout = async () => {
@@ -117,12 +120,12 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Side
         <div className={`flex items-center gap-3 h-16 border-b border-white/5 shrink-0 ${collapsed ? 'justify-center px-3' : 'px-5'}`}>
           <img
             src={itcompLogo}
-            alt="ItDoc"
+            alt="EDMS"
             className={`shrink-0 ${collapsed ? 'h-8 w-8' : 'h-7 w-7'}`}
           />
           {!collapsed && (
             <div className="min-w-0">
-              <p className="text-sm font-bold text-white tracking-wide truncate">ItDoc</p>
+              <p className="text-sm font-bold text-white tracking-wide truncate">EDMS</p>
               <p className="text-[10px] text-zinc-500 truncate">Enterprise</p>
             </div>
           )}
@@ -134,6 +137,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Side
         <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-1 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-zinc-700">
           {NAV_SECTIONS.map((section) => {
             const visibleItems = section.items.filter((item) => {
+              if (item.hideForAdmin && hasRole(Role.ADMIN)) return false;
               if (item.requiredPermission) return hasPermission(item.requiredPermission);
               return true;
             });
@@ -201,7 +205,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Side
             className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-zinc-500 hover:bg-red-500/10 hover:text-red-400 transition-all duration-150 ${collapsed ? 'justify-center' : ''}`}
           >
             <LogOut className="h-[18px] w-[18px] shrink-0" />
-            {!collapsed && <span>Logout</span>}
+            {!collapsed && <span>Déconnexion</span>}
           </button>
         </div>
 

@@ -11,6 +11,7 @@ export interface TenantStorageGrantDto {
   isGranted: boolean;
   isActive: boolean;
   configJson: string | null;
+  storageLimitGB: number | null;
 }
 
 export interface ProviderConfig {
@@ -40,6 +41,7 @@ export interface SetTenantStorageGrantInput {
   providerType: StorageProviderType;
   isGranted: boolean;
   configJson: string | null;
+  storageLimitGB: number | null;
 }
 
 /** PUT /api/app/host-storage/tenants/{tenantId}/grants */

@@ -11,6 +11,8 @@ import { DocumentUploadPage } from '@/features/documents/DocumentUploadPage';
 import { ScanDocumentPage } from '@/features/documents/ScanDocumentPage';
 import { SharedDocumentsPage } from '@/features/documents/shared-page';
 import { ApprovalsPage } from '@/features/documents/approvals-page';
+import { SharedWithMePage } from '@/features/shared/page';
+import { PendingApprovalsPage } from '@/features/approvals/page';
 import { AdminPage } from '@/features/admin/page';
 import { AuditLogPage } from '@/features/admin/AuditLogPage';
 import { SettingsPage } from '@/features/settings/page';
@@ -72,6 +74,19 @@ export function AppRouter() {
           <Route path="scan" element={<ScanDocumentPage />} />
           <Route path=":id" element={<DocumentViewPage />} />
         </Route>
+        {/* Top-level shared/approvals routes used by the updated Sidebar */}
+        <Route path="/shared-with-me" element={<SharedWithMePage />} />
+        <Route
+          path="/pending-approvals"
+          element={
+            <PermissionGuard
+              requiredPermission={Permission.APPROVE_DOCUMENT}
+              fallback={<Navigate to="/dashboard" replace />}
+            >
+              <PendingApprovalsPage />
+            </PermissionGuard>
+          }
+        />
         <Route path="/admin" element={<AdminPage />} />
         <Route path="/audit" element={<AuditLogPage />} />
         <Route path="/settings" element={<SettingsPage />} />

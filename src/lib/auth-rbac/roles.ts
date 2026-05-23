@@ -20,7 +20,7 @@ export enum Permission {
   RESET_PASSWORD = 'password.reset',
   UPLOAD_DOCUMENT = 'document.upload',
   ADD_DESCRIPTION = 'document.add_description',
-  PERFORM_OCR = 'document.perform_ocr',
+  PERFORM_OCR = 'EDMS.Documents.Ocr',
   MANAGE_DOCUMENTS = 'document.manage',
   SHARE_DOCUMENT = 'document.share',
   REQUEST_SHARING_DOCUMENT = 'document.request_sharing',
@@ -35,7 +35,7 @@ export enum Permission {
   MANAGE_PERMISSIONS = 'permissions.manage',
   MANAGE_LIBRARIES = 'libraries.manage',
   APPROVE_DOCUMENT = 'document.approve',
-  APPROVE_SHARING_REQUEST = 'document.approve_sharing',
+  APPROVE_SHARING_REQUEST = 'EDMS.ShareRequests.Manage',
 
   // Admin
   CONSULTE_AUDIT_LOGS = 'audit.consulte',

@@ -81,6 +81,7 @@ export interface TenantStatsDto {
   documentCount: number;
   libraryCount: number;
   storageBytes: number;
+  storageLimitGB: number | null;
 }
 
 /** GET /api/app/host-stats/tenant-stats — custom endpoint exposed by the host. */

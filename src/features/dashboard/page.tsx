@@ -108,6 +108,17 @@ const ACTION_COLOR: Record<string, string> = {
   create_folder: 'text-blue-500 bg-blue-500/10', version_restore: 'text-violet-500 bg-violet-500/10',
 };
 
+// ─── Storage formatter ────────────────────────────────────────────────────────
+
+function formatStorageGB(gb: number): string {
+  const bytes = gb * 1024 * 1024 * 1024;
+  if (bytes < 1)               return '0 B';
+  if (bytes < 1024)            return `${bytes.toFixed(0)} B`;
+  if (bytes < 1024 * 1024)     return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${gb.toFixed(2)} GB`;
+}
+
 // ─── Sparkline (mini SVG) ─────────────────────────────────────────────────────
 
 function Sparkline({ data, color }: { data: number[]; color: string }) {
@@ -239,7 +250,7 @@ export function DashboardPage() {
       sparkData: [28,30,29,33,31,34,33,36,35,38],
     },
     {
-      id: 'storage', label: 'Espace utilisé', value: kpi ? `${kpi.storageUsedGB.toFixed(1)} GB` : '—',
+      id: 'storage', label: 'Espace utilisé', value: kpi ? formatStorageGB(kpi.storageUsedGB) : '—',
       delta: '+3.2 GB', positive: false, sub: kpi ? `/ ${kpi.storageCapacityGB} GB` : '/ — GB',
       icon: HardDrive, iconColor: 'text-purple-500', iconBg: 'bg-purple-500/10',
       border: 'border-purple-500/20', sparkColor: '#8b5cf6',
@@ -376,7 +387,7 @@ export function DashboardPage() {
         )}
 
         {/* KPI Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
           {KPI_CARDS.map((card) => (
             <div
               key={card.id}
@@ -403,7 +414,9 @@ export function DashboardPage() {
                   <div className="h-1.5 rounded-full bg-muted overflow-hidden">
                     <div className="h-full rounded-full bg-gradient-to-r from-purple-500 to-purple-400" style={{ width: `${card.pct}%` }} />
                   </div>
-                  <p className="text-[10px] text-muted-foreground">{card.pct}% utilisé</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    {(() => { const p = card.pct ?? 0; return p < 0.1 && p > 0 ? '< 0.1' : p.toFixed(p < 1 ? 2 : 0); })()}% utilisé
+                  </p>
                 </div>
               ) : (
                 <div className="mt-3 flex items-center gap-1">
@@ -476,8 +489,7 @@ export function DashboardPage() {
               )}
             </div>
 
-            {/* Bottom row: Bar + Donut */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {false && <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
               {/* Approval Turnaround Bar */}
               <div className="rounded-2xl border border-border bg-card p-5">
@@ -552,7 +564,7 @@ export function DashboardPage() {
                   </div>
                 )}
               </div>
-            </div>
+            </div>}
           </div>
 
           {/* RIGHT sidebar */}

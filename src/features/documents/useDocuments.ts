@@ -12,6 +12,8 @@ export interface UseDocumentsOptions {
   searchQuery?: string;
   statusFilter?: string;
   departmentFilter?: string;
+  dateFrom?: string;
+  dateTo?: string;
   selectedTags?: string[];
   tagMode?: 'AND' | 'OR';
   skipCount?: number;
@@ -57,6 +59,9 @@ export function useDocuments(options: UseDocumentsOptions = {}): UseDocumentsRes
     searchQuery,
     selectedTags,
     tagMode,
+    statusFilter,
+    dateFrom,
+    dateTo,
     skipCount = 0,
     maxResultCount = 50,
     sorting,
@@ -86,6 +91,9 @@ export function useDocuments(options: UseDocumentsOptions = {}): UseDocumentsRes
           reviewOnly,
           tags: selectedTags && selectedTags.length > 0 ? selectedTags : undefined,
           filterMode: tagMode === 'AND' ? docService.TagFilterMode.And : docService.TagFilterMode.Or,
+          state: statusFilter || undefined,
+          dateFrom: dateFrom || undefined,
+          dateTo: dateTo || undefined,
         });
         
         setDocuments(result.items);
@@ -98,7 +106,7 @@ export function useDocuments(options: UseDocumentsOptions = {}): UseDocumentsRes
     } finally {
       setIsLoading(false);
     }
-  }, [showTrash, sharedOnly, reviewOnly, folderId, libId, skipCount, maxResultCount, sorting, searchQuery, selectedTags, tagMode]);
+  }, [showTrash, sharedOnly, reviewOnly, folderId, libId, skipCount, maxResultCount, sorting, searchQuery, selectedTags, tagMode, statusFilter, dateFrom, dateTo]);
 
   // Initial fetch and refetch on dependency changes
   useEffect(() => {

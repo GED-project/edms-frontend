@@ -13,9 +13,9 @@ export const getAccessToken = () => _accessToken;
 export const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '/api',
   withCredentials: true,
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  // No default Content-Type — Axios sets it automatically:
+  //   FormData  → multipart/form-data; boundary=...
+  //   plain obj → application/json
 });
 
 // Intercepteur de requêtes : ajoute l'Access Token et le token XSRF s'ils sont présents

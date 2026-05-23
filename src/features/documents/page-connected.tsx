@@ -6,8 +6,9 @@ import {
   FileSpreadsheet, FileImage, File, ChevronLeft, ChevronRight,
   SortAsc, SortDesc, Folder, RotateCcw, Trash,
   LayoutGrid, List, Library, Clock, Plus, X, AlertTriangle, Upload, FolderPlus, Home,
-  Edit3, Send, CheckCircle2, Archive as ArchiveIcon, Lock,
-  Share2, UserPlus, Globe, Camera,
+  Edit3, Send, CheckCircle2, Archive as ArchiveIcon, Lock, FilePlus,
+  Share2, UserPlus, Globe, Camera, ChevronDown, FolderOpen,
+  Tag, SlidersHorizontal,
 } from 'lucide-react';
 import { useAuth } from '@/providers/auth-provider';
 import { Permission, Role } from '@/lib/auth-rbac/roles';
@@ -24,10 +25,25 @@ import {
   getLibraryAccess, grantLibraryAccess, grantLibraryAccessByTag, revokeLibraryAccess,
   type LibraryDto, type LibraryAccessDto,
 } from '../libraries/library.service';
+import {
+  getLibraryTemplates,
+  buildLibraryFromTemplate,
+  parseFolderStructure,
+  type LibraryTemplateLookupDto,
+  type FolderNode,
+} from '../libraries/library-template.service';
 import { getAllTags, getShareableUsers, type ShareableUserDto } from '@/features/admin/admin.service';
+import { getAllDocumentTags } from './document.service';
 import { getFolders, createFolder, type FolderDto } from './folder.service';
+import {
+  getDocumentTemplates,
+  getTemplateMetadata,
+  instantiateDocument,
+  type DocumentTemplateLookupDto,
+} from './document-template.service';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { CustomSelect } from '@/components/ui/CustomSelect';
 import { toast } from 'sonner';
 
 const PAGE_SIZE = 8;
@@ -59,6 +75,62 @@ const STATUS_MAP: Record<DocumentState, { label: string; cls: string }> = {
   [DocumentState.Archived]: { label: 'Archivé', cls: 'bg-zinc-500/10 text-zinc-500' },
   [DocumentState.Trash]: { label: 'Corbeille', cls: 'bg-red-500/10 text-red-600 dark:text-red-400' },
 };
+
+// ─── Folder Tree Preview ──────────────────────────────────────────────────────
+
+function FolderTree({ nodes, depth = 0 }: { nodes: FolderNode[]; depth?: number }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  if (!nodes || nodes.length === 0) return null;
+  return (
+    <ul className={depth === 0 ? 'space-y-0.5' : 'ml-3 mt-0.5 space-y-0.5'}>
+      {nodes.map((node, i) => {
+        const key = `${depth}-${i}-${node.name}`;
+        const isOpen = expanded.has(key);
+        return (
+          <li key={key}>
+            <button
+              type="button"
+              onClick={() =>
+                setExpanded((prev) => {
+                  const next = new Set(prev);
+                  isOpen ? next.delete(key) : next.add(key);
+                  return next;
+                })
+              }
+              className="flex items-center gap-1.5 text-xs text-foreground hover:text-primary transition-colors w-full text-left py-0.5"
+            >
+              {node.children?.length > 0
+                ? isOpen
+                  ? <ChevronDown className="h-3 w-3 shrink-0" />
+                  : <ChevronRight className="h-3 w-3 shrink-0" />
+                : <span className="w-3" />}
+              <FolderOpen className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+              <span className="truncate">{node.name}</span>
+              {node.roles?.length > 0 && (
+                <span className="ml-auto text-[10px] text-muted-foreground bg-accent px-1.5 py-0.5 rounded shrink-0">
+                  {node.roles.join(', ')}
+                </span>
+              )}
+            </button>
+            {isOpen && node.children?.length > 0 && (
+              <FolderTree nodes={node.children} depth={depth + 1} />
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+// ─── Smart metadata field type detector ───────────────────────────────────────
+
+function getMetaFieldType(key: string, value: unknown): 'checkbox' | 'number' | 'date' | 'textarea' | 'text' {
+  if (typeof value === 'boolean') return 'checkbox';
+  if (typeof value === 'number') return 'number';
+  if (key.toLowerCase().includes('date')) return 'date';
+  if (typeof value === 'string' && value.length > 100) return 'textarea';
+  return 'text';
+}
 
 // ─── Helper to get file extension from title ──────────────────────────────────
 
@@ -95,6 +167,17 @@ export function DocumentsPageConnected() {
   const [sortAsc, setSortAsc] = useState(false);
   const [viewMode, setViewMode] = useState<'table' | 'grid'>('table');
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+
+  // ── Filter state ──────────────────────────────────────────────────────────
+  const [statusFilter, setStatusFilter] = useState('');
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [tagMode, setTagMode] = useState<'OR' | 'AND'>('OR');
+  const [showFiltersPanel, setShowFiltersPanel] = useState(false);
+  const [showTagsPanel, setShowTagsPanel] = useState(false);
+  const [allTagsList, setAllTagsList] = useState<string[]>([]);
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [fileTypeFilter, setFileTypeFilter] = useState('');
   
   // Libraries state
   const [libraries, setLibraries] = useState<LibraryDto[]>([]);
@@ -112,6 +195,10 @@ export function DocumentsPageConnected() {
   const [libraryError, setLibraryError] = useState('');
   const [submittingLibrary, setSubmittingLibrary] = useState(false);
   const [libraryToDelete, setLibraryToDelete] = useState<LibraryDto | null>(null);
+  const [libraryCreateMode, setLibraryCreateMode] = useState<'manual' | 'template'>('manual');
+  const [libraryTemplates, setLibraryTemplates] = useState<LibraryTemplateLookupDto[]>([]);
+  const [libraryTemplatesLoading, setLibraryTemplatesLoading] = useState(false);
+  const [selectedLibraryTemplateId, setSelectedLibraryTemplateId] = useState('');
 
   // Share modal state
   const [libraryToShare, setLibraryToShare] = useState<LibraryDto | null>(null);
@@ -126,6 +213,16 @@ export function DocumentsPageConnected() {
 
   // Add menu state
   const [showAddMenu, setShowAddMenu] = useState(false);
+
+  // Document template modal state
+  const [showTemplateDocModal, setShowTemplateDocModal] = useState(false);
+  const [documentTemplates, setDocumentTemplates] = useState<DocumentTemplateLookupDto[]>([]);
+  const [documentTemplatesLoading, setDocumentTemplatesLoading] = useState(false);
+  const [selectedDocumentTemplateId, setSelectedDocumentTemplateId] = useState('');
+  const [templateMetadata, setTemplateMetadata] = useState<Record<string, unknown>>({});
+  const [templateDocTitle, setTemplateDocTitle] = useState('');
+  const [templateDocDescription, setTemplateDocDescription] = useState('');
+  const [submittingTemplateDoc, setSubmittingTemplateDoc] = useState(false);
   
   // Folder creation modal
   const [showCreateFolderModal, setShowCreateFolderModal] = useState(false);
@@ -287,6 +384,31 @@ export function DocumentsPageConnected() {
 
   async function handleCreateLibrary(e: React.FormEvent) {
     e.preventDefault();
+
+    if (libraryCreateMode === 'template') {
+      if (!selectedLibraryTemplateId) {
+        setLibraryError('Veuillez sélectionner un modèle de bibliothèque');
+        return;
+      }
+
+      try {
+        setSubmittingLibrary(true);
+        await buildLibraryFromTemplate(selectedLibraryTemplateId);
+        toast.success('Bibliothèque créée depuis le modèle');
+        setShowCreateLibraryModal(false);
+        setLibraryCreateMode('manual');
+        setSelectedLibraryTemplateId('');
+        setLibraryError('');
+        loadLibraries();
+      } catch {
+        toast.error('Échec de la création depuis le modèle');
+      } finally {
+        setSubmittingLibrary(false);
+      }
+
+      return;
+    }
+
     const trimmed = libraryName.trim();
 
     if (!trimmed) {
@@ -308,6 +430,8 @@ export function DocumentsPageConnected() {
       setLibraryDescription('');
       setLibraryIsPublic(false);
       setLibraryError('');
+      setLibraryCreateMode('manual');
+      setSelectedLibraryTemplateId('');
       loadLibraries();
     } catch (error) {
       toast.error('Échec de la création de la bibliothèque');
@@ -363,6 +487,105 @@ export function DocumentsPageConnected() {
     }
   }
 
+  async function openTemplateDocumentModal() {
+    setShowTemplateDocModal(true);
+    setTemplateDocTitle('');
+    setTemplateDocDescription('');
+    setTemplateMetadata({});
+    setSelectedDocumentTemplateId('');
+    setDocumentTemplatesLoading(true);
+    try {
+      const templates = await getDocumentTemplates();
+      setDocumentTemplates(templates);
+      if (templates.length > 0) {
+        setSelectedDocumentTemplateId(templates[0].id);
+      }
+    } catch {
+      toast.error('Impossible de charger les modèles de document');
+      setShowTemplateDocModal(false);
+    } finally {
+      setDocumentTemplatesLoading(false);
+    }
+  }
+
+  async function loadTemplateMetadata(templateId: string) {
+    if (!templateId) {
+      setTemplateMetadata({});
+      return;
+    }
+
+    try {
+      const response = await getTemplateMetadata(templateId);
+      const raw = response.metadata;
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        setTemplateMetadata(raw as Record<string, unknown>);
+      } else {
+        setTemplateMetadata({});
+      }
+    } catch {
+      setTemplateMetadata({});
+      toast.error('Impossible de charger les métadonnées du modèle');
+    }
+  }
+
+  async function handleInstantiateTemplateDocument(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selectedDocumentTemplateId) {
+      toast.error('Veuillez sélectionner un modèle de document');
+      return;
+    }
+
+    try {
+      setSubmittingTemplateDoc(true);
+      await instantiateDocument({
+        templateId: selectedDocumentTemplateId,
+        title: templateDocTitle.trim() || undefined,
+        description: templateDocDescription.trim() || undefined,
+        folderId: folderId ?? undefined,
+        libraryId: libId ?? undefined,
+        formData: templateMetadata,
+      });
+
+      toast.success('Document créé depuis le modèle');
+      setShowTemplateDocModal(false);
+      await refetch();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error?.message || 'Échec de création du document depuis le modèle');
+    } finally {
+      setSubmittingTemplateDoc(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!showCreateLibraryModal || libraryCreateMode !== 'template') {
+      return;
+    }
+
+    setLibraryTemplatesLoading(true);
+    getLibraryTemplates()
+      .then((items) => {
+        setLibraryTemplates(items);
+        if (!selectedLibraryTemplateId && items.length > 0) {
+          setSelectedLibraryTemplateId(items[0].id);
+        }
+      })
+      .catch(() => {
+        toast.error('Impossible de charger les modèles de bibliothèque');
+      })
+      .finally(() => setLibraryTemplatesLoading(false));
+  }, [showCreateLibraryModal, libraryCreateMode, selectedLibraryTemplateId]);
+
+  useEffect(() => {
+    if (selectedDocumentTemplateId) {
+      loadTemplateMetadata(selectedDocumentTemplateId);
+    }
+  }, [selectedDocumentTemplateId]);
+
+  // Load all tags once on mount
+  useEffect(() => {
+    getAllDocumentTags().then(setAllTagsList).catch(() => {});
+  }, []);
+
   // Debounce search
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), 300);
@@ -397,9 +620,27 @@ export function DocumentsPageConnected() {
     skipCount: (page - 1) * PAGE_SIZE,
     maxResultCount: PAGE_SIZE,
     sorting: sortAsc ? 'creationTime' : 'creationTime desc',
+    selectedTags: selectedTags.length > 0 ? selectedTags : undefined,
+    tagMode,
+    statusFilter: statusFilter || undefined,
+    dateFrom: dateFrom || undefined,
+    dateTo: dateTo || undefined,
   });
 
   const items = showTrash ? trashItems : documents;
+
+  // File type is client-side only (not a backend filter); all other filters are server-side.
+  const filteredItems = fileTypeFilter
+    ? items.filter((doc) => {
+        const ext = doc.title.split('.').pop()?.toLowerCase() ?? '';
+        if (fileTypeFilter === 'pdf') return ext === 'pdf';
+        if (fileTypeFilter === 'excel') return ['xls', 'xlsx'].includes(ext);
+        if (fileTypeFilter === 'image') return ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext);
+        if (fileTypeFilter === 'other') return !['pdf', 'xls', 'xlsx', 'png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext);
+        return true;
+      })
+    : items;
+
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
   const hideDocumentListAtLibraryRoot = isInsideLibrary && !debouncedSearch && folders.length > 0;
 
@@ -623,6 +864,19 @@ export function DocumentsPageConnected() {
                       <button
                         onClick={() => {
                           setShowAddMenu(false);
+                          openTemplateDocumentModal();
+                        }}
+                        className="flex w-full items-center gap-3 px-4 py-2.5 text-sm hover:bg-accent transition-colors text-foreground"
+                      >
+                        <FilePlus className="h-4 w-4 text-emerald-500" />
+                        <div className="text-left">
+                          <div className="font-medium">Créer depuis un modèle</div>
+                          <div className="text-xs text-muted-foreground">Document prérempli</div>
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowAddMenu(false);
                           navigate(`/documents/scan?lib=${libId}${folderId ? `&folder=${folderId}` : ''}`);
                         }}
                         className="flex w-full items-center gap-3 px-4 py-2.5 text-sm hover:bg-accent transition-colors text-foreground"
@@ -654,28 +908,171 @@ export function DocumentsPageConnected() {
           </div>
         </div>
 
-        {/* Search & Filters - only show when not at root or when searching */}
-        {(!isRootView || debouncedSearch) && !showTrash && (
-          <div className="flex flex-col sm:flex-row gap-3">
-            <div className="relative flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <input
-                type="search"
-                placeholder="Rechercher par nom..."
-                value={search}
-                onChange={(e) => handleSearch(e.target.value)}
-                className="w-full rounded-lg border border-input bg-background pl-9 pr-4 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/50 transition"
+        {/* ── Filter Toolbar ── */}
+        {!showTrash && (
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Search — always visible so users can search from root view too */}
+              <div className="relative flex-1 min-w-[200px]">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => handleSearch(e.target.value)}
+                  placeholder={isRootView ? 'Rechercher une bibliothèque par nom...' : 'Rechercher par nom, contenu, métadonnées...'}
+                  className="w-full rounded-lg border border-input bg-background pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 placeholder:text-muted-foreground/70"
+                />
+              </div>
+              {!isRootView && <Filter className="h-4 w-4 text-muted-foreground shrink-0" />}
+              {/* Advanced filters — only relevant inside a library */}
+              {!isRootView && <>
+              {/* Status filter */}
+              <CustomSelect
+                value={statusFilter}
+                onChange={(v) => { setStatusFilter(v); setPage(1); }}
+                options={[
+                  { value: '', label: 'Tous les statuts' },
+                  { value: 'Draft', label: 'Brouillon' },
+                  { value: 'Review', label: 'En attente' },
+                  { value: 'Approved', label: 'Approuvé' },
+                  { value: 'Archived', label: 'Archivé' },
+                ]}
               />
-            </div>
-            <div className="flex items-center gap-2">
-              <Filter className="h-4 w-4 text-muted-foreground shrink-0" />
+              {/* File type filter */}
+              <CustomSelect
+                value={fileTypeFilter}
+                onChange={(v) => { setFileTypeFilter(v); setPage(1); }}
+                options={[
+                  { value: '', label: 'Tous les types' },
+                  { value: 'pdf', label: 'PDF' },
+                  { value: 'excel', label: 'Excel' },
+                  { value: 'image', label: 'Image' },
+                  { value: 'other', label: 'Autre' },
+                ]}
+              />
+              {/* Tags toggle */}
               <button
-                onClick={() => setSortAsc((v) => !v)}
-                className="flex h-9 w-9 items-center justify-center rounded-lg border border-input bg-background text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                onClick={() => setShowTagsPanel(v => !v)}
+                className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${showTagsPanel || selectedTags.length > 0 ? 'border-primary bg-primary/10 text-primary' : 'border-input bg-background text-foreground hover:bg-accent'}`}
+              >
+                <Tag className="h-4 w-4" />
+                Tags {selectedTags.length > 0 && `(${selectedTags.length})`}
+              </button>
+              {/* Filters toggle */}
+              <button
+                onClick={() => setShowFiltersPanel(v => !v)}
+                className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${showFiltersPanel || dateFrom || dateTo ? 'border-primary bg-primary/10 text-primary' : 'border-input bg-background text-foreground hover:bg-accent'}`}
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+                Filtres {showFiltersPanel ? '▲' : '▼'}
+              </button>
+              {/* Clear filters */}
+              {(statusFilter || fileTypeFilter || selectedTags.length > 0 || dateFrom || dateTo) && (
+                <button
+                  onClick={() => { setStatusFilter(''); setFileTypeFilter(''); setSelectedTags([]); setDateFrom(''); setDateTo(''); setPage(1); }}
+                  className="flex items-center gap-1 rounded-lg border border-red-300 bg-red-50 dark:bg-red-500/10 px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors"
+                >
+                  <X className="h-3 w-3" /> Effacer
+                </button>
+              )}
+              </>}
+              {/* Sort — always visible */}
+              <button
+                onClick={() => { setSortAsc(v => !v); setPage(1); }}
+                className="flex items-center gap-1 rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground hover:bg-accent transition-colors"
+                title="Inverser le tri"
               >
                 {sortAsc ? <SortAsc className="h-4 w-4" /> : <SortDesc className="h-4 w-4" />}
               </button>
             </div>
+
+            {/* Advanced filters panel */}
+            {!isRootView && showFiltersPanel && (
+              <div className="rounded-xl border border-border bg-card p-4 space-y-4">
+                <p className="text-sm font-semibold text-foreground flex items-center gap-2">
+                  <SlidersHorizontal className="h-4 w-4" /> Filtres avancés
+                </p>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-medium text-muted-foreground">Date depuis</label>
+                    <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+                      className="rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-medium text-muted-foreground">Date jusqu'au</label>
+                    <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+                      className="rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-medium text-muted-foreground">Type de fichier</label>
+                    <CustomSelect
+                      value={fileTypeFilter}
+                      onChange={(v) => { setFileTypeFilter(v); setPage(1); }}
+                      options={[
+                        { value: '', label: 'Tous les types' },
+                        { value: 'pdf', label: 'PDF' },
+                        { value: 'excel', label: 'Excel' },
+                        { value: 'image', label: 'Image' },
+                        { value: 'other', label: 'Autre' },
+                      ]}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-medium text-muted-foreground">Taille du fichier</label>
+                    <select className="rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                      <option>Toutes les tailles</option>
+                      <option value="small">{'< 1 MB'}</option>
+                      <option value="medium">1 MB – 10 MB</option>
+                      <option value="large">{'> 10 MB'}</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Tags filter panel */}
+            {!isRootView && showTagsPanel && (
+              <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-semibold text-foreground flex items-center gap-2">
+                    <Tag className="h-4 w-4" /> Filtrer par tags
+                  </p>
+                  <div className="flex items-center gap-1 rounded-lg border border-border overflow-hidden text-xs font-semibold">
+                    <button onClick={() => setTagMode('OR')}
+                      className={`px-3 py-1 transition-colors ${tagMode === 'OR' ? 'bg-primary text-primary-foreground' : 'bg-background text-muted-foreground hover:bg-accent'}`}>
+                      OU
+                    </button>
+                    <button onClick={() => setTagMode('AND')}
+                      className={`px-3 py-1 transition-colors ${tagMode === 'AND' ? 'bg-primary text-primary-foreground' : 'bg-background text-muted-foreground hover:bg-accent'}`}>
+                      ET
+                    </button>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {allTagsList.map(tag => (
+                    <button
+                      key={tag}
+                      onClick={() => {
+                        setSelectedTags(prev =>
+                          prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]
+                        );
+                        setPage(1);
+                      }}
+                      className={`flex items-center gap-1 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                        selectedTags.includes(tag)
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border bg-background text-muted-foreground hover:border-primary/40 hover:text-foreground'
+                      }`}
+                    >
+                      <Tag className="h-3 w-3" /> {tag}
+                    </button>
+                  ))}
+                  {allTagsList.length === 0 && (
+                    <p className="text-xs text-muted-foreground">Aucun tag disponible</p>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -686,7 +1083,7 @@ export function DocumentsPageConnected() {
           </div>
         )}
 
-        {/* Library Root View - Grid of Libraries */}
+        {/* Library Root View - Grid of Libraries (only shown when no search query) */}
         {isRootView && !debouncedSearch ? (
           <div>
             {librariesLoading ? (
@@ -847,7 +1244,7 @@ export function DocumentsPageConnected() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {items.length === 0 ? (
+                  {filteredItems.length === 0 ? (
                     <tr>
                       <td colSpan={4} className="py-12 text-center">
                         <div className="flex flex-col items-center justify-center">
@@ -856,7 +1253,9 @@ export function DocumentsPageConnected() {
                           </div>
                           <p className="text-sm font-medium text-foreground">Aucun document</p>
                           <p className="text-xs text-muted-foreground mt-1">
-                            {isInsideFolder
+                            {statusFilter || fileTypeFilter || selectedTags.length > 0 || dateFrom || dateTo
+                              ? 'Aucun document ne correspond aux filtres sélectionnés.'
+                              : isInsideFolder
                               ? 'Aucun document dans ce dossier.'
                               : isInsideLibrary
                               ? 'Ouvrez un dossier pour afficher les documents.'
@@ -877,7 +1276,7 @@ export function DocumentsPageConnected() {
                       </td>
                     </tr>
                   ) : (
-                    items.map((doc) => {
+                    filteredItems.map((doc) => {
                       const Icon = TYPE_ICON['pdf'] || FileText;
                       const status = STATUS_MAP[doc.state];
                       return (
@@ -904,6 +1303,17 @@ export function DocumentsPageConnected() {
                             <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium ${status.cls}`}>
                               {status.label}
                             </span>
+                          </td>
+                          <td className="px-4 py-3 hidden lg:table-cell">
+                            {(() => {
+                              const lvl = doc.clearanceLevel as unknown as number;
+                              const cfg = lvl === 2
+                                ? { label: 'Confidentiel', cls: 'bg-red-500/10 text-red-600 dark:text-red-400' }
+                                : lvl === 1
+                                ? { label: 'Interne',      cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-400' }
+                                : { label: 'Public',       cls: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' };
+                              return <span className={`inline-flex rounded-full px-2.5 py-0.5 text-[11px] font-medium ${cfg.cls}`}>{cfg.label}</span>;
+                            })()}
                           </td>
                           <td className="px-4 py-3 text-muted-foreground hidden lg:table-cell">
                             {new Date(doc.creationTime).toLocaleDateString('fr-FR')}
@@ -1020,14 +1430,16 @@ export function DocumentsPageConnected() {
         {/* Grid View */}
         {!isLoading && viewMode === 'grid' && !hideDocumentListAtLibraryRoot && (
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            {items.length === 0 ? (
+            {filteredItems.length === 0 ? (
               <div className="col-span-full py-16 flex flex-col items-center justify-center text-center border border-dashed border-border rounded-xl bg-card">
                 <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted mb-4">
                   <FileText className="h-8 w-8 text-muted-foreground" />
                 </div>
                 <h3 className="text-base font-semibold text-foreground">Aucun document</h3>
                 <p className="text-sm text-muted-foreground mt-1 max-w-sm">
-                  {isInsideFolder
+                  {statusFilter || fileTypeFilter || selectedTags.length > 0 || dateFrom || dateTo
+                    ? 'Aucun document ne correspond aux filtres sélectionnés.'
+                    : isInsideFolder
                     ? 'Aucun document dans ce dossier.'
                     : isInsideLibrary
                     ? 'Ouvrez un dossier pour afficher les documents.'
@@ -1055,7 +1467,7 @@ export function DocumentsPageConnected() {
                 )}
               </div>
             ) : (
-              items.map((doc) => {
+              filteredItems.map((doc) => {
                 const Icon = TYPE_ICON['pdf'] || FileText;
                 const status = STATUS_MAP[doc.state];
                 return (
@@ -1159,6 +1571,8 @@ export function DocumentsPageConnected() {
                   setLibraryDescription('');
                   setLibraryIsPublic(false);
                   setLibraryError('');
+                  setLibraryCreateMode('manual');
+                  setSelectedLibraryTemplateId('');
                 }}
                 className="text-muted-foreground hover:text-foreground transition-colors"
               >
@@ -1166,6 +1580,79 @@ export function DocumentsPageConnected() {
               </button>
             </div>
             <form onSubmit={handleCreateLibrary} className="p-5 space-y-4">
+              <div>
+                <p className="block text-sm font-medium text-foreground mb-2">Mode de création</p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLibraryCreateMode('manual');
+                      setLibraryError('');
+                    }}
+                    className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-all ${
+                      libraryCreateMode === 'manual'
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border bg-background text-muted-foreground hover:bg-accent'
+                    }`}
+                  >
+                    Manuel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLibraryCreateMode('template');
+                      setLibraryError('');
+                    }}
+                    className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-all ${
+                      libraryCreateMode === 'template'
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border bg-background text-muted-foreground hover:bg-accent'
+                    }`}
+                  >
+                    Modèle
+                  </button>
+                </div>
+              </div>
+
+              {libraryCreateMode === 'template' && (
+                <div className="space-y-2">
+                  <label htmlFor="libraryTemplate" className="block text-sm font-medium text-foreground">
+                    Modèle de bibliothèque
+                  </label>
+                  <select
+                    id="libraryTemplate"
+                    value={selectedLibraryTemplateId}
+                    onChange={(e) => {
+                      setSelectedLibraryTemplateId(e.target.value);
+                      setLibraryError('');
+                    }}
+                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    disabled={libraryTemplatesLoading}
+                  >
+                    {libraryTemplates.length === 0 && <option value="">Aucun modèle disponible</option>}
+                    {libraryTemplates.map((tpl) => (
+                      <option key={tpl.id} value={tpl.id}>
+                        {tpl.name}
+                      </option>
+                    ))}
+                  </select>
+                  {(() => {
+                    const tpl = libraryTemplates.find((t) => t.id === selectedLibraryTemplateId);
+                    if (!tpl?.folderStructureJson) return null;
+                    const nodes = parseFolderStructure(tpl.folderStructureJson);
+                    if (nodes.length === 0) return null;
+                    return (
+                      <div className="rounded-lg border border-border bg-muted/30 p-3 max-h-48 overflow-y-auto">
+                        <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                          Aperçu de la structure
+                        </p>
+                        <FolderTree nodes={nodes} />
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
               <div>
                 <label htmlFor="libraryName" className="block text-sm font-medium text-foreground mb-1">
                   Nom de la bibliothèque
@@ -1178,6 +1665,7 @@ export function DocumentsPageConnected() {
                   onChange={(e) => { setLibraryName(e.target.value); setLibraryError(''); }}
                   placeholder="ex: Ressources Humaines"
                   variant="md"
+                  disabled={libraryCreateMode === 'template'}
                 />
                 {libraryError && <p className="mt-1.5 text-xs font-medium text-red-500">{libraryError}</p>}
               </div>
@@ -1191,6 +1679,7 @@ export function DocumentsPageConnected() {
                   onChange={(e) => setLibraryDescription(e.target.value)}
                   placeholder="Décrivez l'objectif de cette bibliothèque..."
                   rows={3}
+                  disabled={libraryCreateMode === 'template'}
                   className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 placeholder:text-muted-foreground/80"
                 />
               </div>
@@ -1236,6 +1725,8 @@ export function DocumentsPageConnected() {
                     setLibraryDescription('');
                     setLibraryIsPublic(false);
                     setLibraryError('');
+                    setLibraryCreateMode('manual');
+                    setSelectedLibraryTemplateId('');
                   }}
                   variant="outline"
                   size="md"
@@ -1249,7 +1740,138 @@ export function DocumentsPageConnected() {
                   size="md"
                   disabled={submittingLibrary}
                 >
-                  {submittingLibrary ? 'Création...' : 'Créer'}
+                  {submittingLibrary ? 'Création...' : libraryCreateMode === 'template' ? 'Créer depuis modèle' : 'Créer'}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Create Document From Template Modal */}
+      {showTemplateDocModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="flex flex-col w-full max-w-xl rounded-xl border border-border bg-card shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between border-b border-border px-5 py-4">
+              <div className="flex items-center gap-2">
+                <FilePlus className="h-5 w-5 text-primary" />
+                <h2 className="text-base font-semibold text-foreground">Créer un document depuis un modèle</h2>
+              </div>
+              <button
+                onClick={() => setShowTemplateDocModal(false)}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleInstantiateTemplateDocument} className="p-5 space-y-4 max-h-[70vh] overflow-y-auto">
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">Modèle</label>
+                <select
+                  value={selectedDocumentTemplateId}
+                  onChange={(e) => setSelectedDocumentTemplateId(e.target.value)}
+                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  disabled={documentTemplatesLoading}
+                >
+                  {documentTemplates.length === 0 && <option value="">Aucun modèle disponible</option>}
+                  {documentTemplates.map((tpl) => (
+                    <option key={tpl.id} value={tpl.id}>{tpl.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">Titre (optionnel)</label>
+                <Input
+                  value={templateDocTitle}
+                  onChange={(e) => setTemplateDocTitle(e.target.value)}
+                  placeholder="Si vide, le titre du modèle sera utilisé"
+                  variant="md"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">Description (optionnel)</label>
+                <textarea
+                  value={templateDocDescription}
+                  onChange={(e) => setTemplateDocDescription(e.target.value)}
+                  rows={3}
+                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+
+              {Object.keys(templateMetadata).length > 0 && (
+                <div className="space-y-3">
+                  <p className="text-sm font-medium text-foreground">Métadonnées du modèle</p>
+                  {Object.entries(templateMetadata).map(([key, value]) => {
+                    const fieldType = getMetaFieldType(key, value);
+                    return (
+                      <div key={key}>
+                        <label className="block text-xs font-medium text-muted-foreground mb-1">{key}</label>
+                        {fieldType === 'checkbox' ? (
+                          <label className="flex items-center gap-2 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={!!value}
+                              onChange={(e) =>
+                                setTemplateMetadata((prev) => ({ ...prev, [key]: e.target.checked }))
+                              }
+                              className="h-4 w-4 rounded border-border accent-primary"
+                            />
+                            <span className="text-sm text-muted-foreground">{value ? 'Oui' : 'Non'}</span>
+                          </label>
+                        ) : fieldType === 'number' ? (
+                          <Input
+                            type="number"
+                            value={value == null ? '' : String(value)}
+                            onChange={(e) =>
+                              setTemplateMetadata((prev) => ({
+                                ...prev,
+                                [key]: e.target.value === '' ? 0 : parseFloat(e.target.value),
+                              }))
+                            }
+                            variant="md"
+                          />
+                        ) : fieldType === 'date' ? (
+                          <Input
+                            type="date"
+                            value={value == null ? '' : String(value)}
+                            onChange={(e) =>
+                              setTemplateMetadata((prev) => ({ ...prev, [key]: e.target.value }))
+                            }
+                            variant="md"
+                          />
+                        ) : fieldType === 'textarea' ? (
+                          <textarea
+                            value={value == null ? '' : String(value)}
+                            onChange={(e) =>
+                              setTemplateMetadata((prev) => ({ ...prev, [key]: e.target.value }))
+                            }
+                            rows={3}
+                            className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                          />
+                        ) : (
+                          <Input
+                            value={value == null ? '' : String(value)}
+                            onChange={(e) =>
+                              setTemplateMetadata((prev) => ({ ...prev, [key]: e.target.value }))
+                            }
+                            variant="md"
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button type="button" variant="outline" size="md" onClick={() => setShowTemplateDocModal(false)} disabled={submittingTemplateDoc}>
+                  Annuler
+                </Button>
+                <Button type="submit" variant="primary" size="md" disabled={submittingTemplateDoc || !selectedDocumentTemplateId}>
+                  {submittingTemplateDoc ? 'Création...' : 'Créer le document'}
                 </Button>
               </div>
             </form>

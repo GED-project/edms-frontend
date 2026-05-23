@@ -21,19 +21,22 @@ import {
   FileText,
   CheckCircle2,
   XCircle,
+  Layers,
 } from 'lucide-react';
 import { Role, Permission } from '@/lib/auth-rbac/roles';
 import { Navigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '@/providers/auth-provider';
 import { toast } from 'sonner';
 import { MetadataFieldsTab } from './MetadataFieldsTab';
+import { TemplatesAdminTab } from './TemplatesAdminTab';
 import { getUsers, updateUser, createUser, deleteUser, getUserRoles, setUserRoles, getRolePermissions, updateRolePermissions, getUserTags, setUserTags, getAllTags, type IdentityUserDto, type PermissionListResultDto, type PermissionGrantInfo } from './admin.service';
 import { getMyStorageGrants, setMyActiveProvider, type TenantStorageGrantDto, type StorageProviderType } from '@/features/host/storage.service';
 import { shareRequestService, type ShareRequestDto } from '@/features/documents/share-request.service';
+import { reindexDocuments, type ReindexResult } from '@/features/documents/document.service';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type AdminTab = 'users' | 'roles' | 'storage' | 'metadata' | 'share-requests';
+type AdminTab = 'users' | 'roles' | 'storage' | 'metadata' | 'share-requests' | 'templates';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -118,11 +121,12 @@ function UsersTab() {
     password: '',
     role: Role.USER as Role,
     tags: '',
+    clearanceLevel: 0 as 0 | 1 | 2,
   });
 
   // Edit / delete / reset-password modals
   const [editingUser, setEditingUser] = useState<IdentityUserDto | null>(null);
-  const [editForm, setEditForm] = useState({ userName: '', name: '', surname: '', email: '', role: Role.USER as Role, tags: '' });
+  const [editForm, setEditForm] = useState({ userName: '', name: '', surname: '', email: '', role: Role.USER as Role, tags: '', clearanceLevel: 0 as 0 | 1 | 2 });
   const [editing, setEditing] = useState(false);
 
   const [deletingUser, setDeletingUser] = useState<IdentityUserDto | null>(null);
@@ -186,6 +190,7 @@ function UsersTab() {
 
   const toggleActive = async (user: IdentityUserDto) => {
     try {
+      const existingClearance = user.extraProperties?.ClearanceLevel ?? 0;
       await updateUser(user.id, {
         userName: user.userName,
         name: user.name,
@@ -193,7 +198,7 @@ function UsersTab() {
         email: user.email,
         roleNames: user.roleNames ?? [],
         isActive: !user.isActive,
-        extraProperties: { ClearanceLevel: 0 },
+        extraProperties: { ClearanceLevel: existingClearance },
       });
       setUsers((prev) =>
         prev.map((u) => u.id === user.id ? { ...u, isActive: !u.isActive } : u)
@@ -209,7 +214,7 @@ function UsersTab() {
     return displayName.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
   });
 
-  const resetForm = () => setNewUser({ userName: '', name: '', surname: '', email: '', password: '', role: Role.USER, tags: '' });
+  const resetForm = () => setNewUser({ userName: '', name: '', surname: '', email: '', password: '', role: Role.USER, tags: '', clearanceLevel: 0 });
 
   const handleCreate = async () => {
     if (!newUser.userName || !newUser.email || !newUser.password) {
@@ -227,7 +232,7 @@ function UsersTab() {
         password: newUser.password,
         roleNames: [newUser.role],
         isActive: true,
-        extraProperties: { ClearanceLevel: 0 },
+        extraProperties: { ClearanceLevel: newUser.clearanceLevel },
       });
       if (parsedTags.length > 0) {
         await setUserTags(created.id, parsedTags);
@@ -258,6 +263,8 @@ function UsersTab() {
   const openEdit = async (u: IdentityUserDto) => {
     await loadAvailableTags();
     setEditingUser(u);
+    const rawClearance = u.extraProperties?.ClearanceLevel;
+    const clearanceLevel = ([0, 1, 2].includes(Number(rawClearance)) ? Number(rawClearance) : 0) as 0 | 1 | 2;
     setEditForm({
       userName: u.userName,
       name: u.name ?? '',
@@ -265,17 +272,11 @@ function UsersTab() {
       email: u.email,
       role: getEffectiveRole(u.roleNames),
       tags: '',
+      clearanceLevel,
     });
     try {
       const userTags = await getUserTags(u.id);
-      setEditForm({
-        userName: u.userName,
-        name: u.name ?? '',
-        surname: u.surname ?? '',
-        email: u.email,
-        role: getEffectiveRole(u.roleNames),
-        tags: userTags.tags.join(', '),
-      });
+      setEditForm(prev => ({ ...prev, tags: userTags.tags.join(', ') }));
     } catch {
       toast.error('Impossible de charger les étiquettes de cet utilisateur');
     }
@@ -297,7 +298,7 @@ function UsersTab() {
         email: editForm.email,
         roleNames: [editForm.role],
         isActive: editingUser.isActive,
-        extraProperties: { ClearanceLevel: 0 },
+        extraProperties: { ClearanceLevel: editForm.clearanceLevel },
       });
       await setUserTags(editingUser.id, parsedTags);
       setAvailableTags((prev) =>
@@ -463,6 +464,18 @@ function UsersTab() {
                       <span className={`h-1.5 w-1.5 rounded-full ${u.isActive ? 'bg-emerald-500' : 'bg-zinc-400'}`} />
                       {u.isActive ? 'Actif' : 'Inactif'}
                     </span>
+                  </td>
+
+                  <td className="px-4 py-3 hidden lg:table-cell">
+                    {(() => {
+                      const lvl = Number(u.extraProperties?.ClearanceLevel ?? 0);
+                      const cfg = lvl === 2
+                        ? { label: 'Confidentiel', cls: 'bg-red-500/10 text-red-600 dark:text-red-400' }
+                        : lvl === 1
+                        ? { label: 'Interne',      cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-400' }
+                        : { label: 'Public',       cls: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' };
+                      return <span className={`inline-flex rounded-full px-2.5 py-0.5 text-[11px] font-medium ${cfg.cls}`}>{cfg.label}</span>;
+                    })()}
                   </td>
 
                   <td className="px-4 py-3 text-muted-foreground text-xs hidden lg:table-cell">
@@ -631,6 +644,21 @@ function UsersTab() {
                   <p className="mt-2 text-[11px] text-muted-foreground">Aucune étiquette existante pour le moment.</p>
                 )}
               </div>
+              <div>
+                <label className="block text-xs font-medium text-foreground mb-1.5">Niveau de confidentialité</label>
+                <div className="flex gap-2">
+                  {([{ v: 0, label: 'Public', cls: 'emerald' }, { v: 1, label: 'Interne', cls: 'amber' }, { v: 2, label: 'Confidentiel', cls: 'red' }] as const).map(({ v, label, cls }) => (
+                    <button key={v} type="button" onClick={() => setNewUser({ ...newUser, clearanceLevel: v })}
+                      className={`flex-1 rounded-lg border py-2 text-xs font-semibold transition-all ${newUser.clearanceLevel === v
+                        ? cls === 'emerald' ? 'border-emerald-500 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                        : cls === 'amber'   ? 'border-amber-500 bg-amber-500/10 text-amber-700 dark:text-amber-400'
+                                            : 'border-red-500 bg-red-500/10 text-red-700 dark:text-red-400'
+                        : 'border-border bg-background text-muted-foreground hover:bg-accent'}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
 
             <div className="flex justify-end gap-2 border-t border-border px-5 py-3 bg-muted/20">
@@ -751,6 +779,21 @@ function UsersTab() {
                 ) : (
                   <p className="mt-2 text-[11px] text-muted-foreground">Aucune étiquette existante pour le moment.</p>
                 )}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-foreground mb-1.5">Niveau de confidentialité</label>
+                <div className="flex gap-2">
+                  {([{ v: 0, label: 'Public', cls: 'emerald' }, { v: 1, label: 'Interne', cls: 'amber' }, { v: 2, label: 'Confidentiel', cls: 'red' }] as const).map(({ v, label, cls }) => (
+                    <button key={v} type="button" onClick={() => setEditForm({ ...editForm, clearanceLevel: v })}
+                      className={`flex-1 rounded-lg border py-2 text-xs font-semibold transition-all ${editForm.clearanceLevel === v
+                        ? cls === 'emerald' ? 'border-emerald-500 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                        : cls === 'amber'   ? 'border-amber-500 bg-amber-500/10 text-amber-700 dark:text-amber-400'
+                                            : 'border-red-500 bg-red-500/10 text-red-700 dark:text-red-400'
+                        : 'border-border bg-background text-muted-foreground hover:bg-accent'}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
             <div className="flex justify-end gap-2 border-t border-border px-5 py-3 bg-muted/20">
@@ -1086,9 +1129,12 @@ function ShareRequestsTab() {
         {requests.map((req) => (
           <div key={req.id} className="p-4 flex items-center justify-between gap-4 hover:bg-muted/30 transition-colors">
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-foreground truncate">Demande de partage</p>
-              <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
-                Document ID : {req.documentId.substring(0, 8)}… | Permissions : {req.requestedPermissions} | Créée le {new Date(req.creationTime).toLocaleDateString('fr-FR')}
+              <p className="text-sm font-medium text-foreground truncate">
+                {req.requesterName || req.requesterId.substring(0, 8)} demande l'accès à&nbsp;
+                <span className="text-primary">{req.documentTitle || req.documentId.substring(0, 8)}</span>
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Permissions : {req.requestedPermissions} · Créée le {new Date(req.creationTime).toLocaleDateString('fr-FR')}
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -1137,6 +1183,8 @@ function StorageTab() {
   const [grants, setGrants] = useState<TenantStorageGrantDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [activating, setActivating] = useState<StorageProviderType | null>(null);
+  const [reindexing, setReindexing] = useState(false);
+  const [reindexResult, setReindexResult] = useState<ReindexResult | null>(null);
 
   const reload = async () => {
     setLoading(true);
@@ -1166,6 +1214,24 @@ function StorageTab() {
   };
 
   const activeGrant = grants.find((g) => g.isActive);
+
+  const handleReindex = async () => {
+    setReindexing(true);
+    setReindexResult(null);
+    try {
+      const result = await reindexDocuments();
+      setReindexResult(result);
+      if (result.elasticsearchEnabled) {
+        toast.success(`Réindexation terminée : ${result.indexedCount}/${result.totalDocuments} documents indexés`);
+      } else {
+        toast.error('Elasticsearch n\'est pas activé sur le serveur');
+      }
+    } catch {
+      toast.error('Échec de la réindexation Elasticsearch');
+    } finally {
+      setReindexing(false);
+    }
+  };
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -1228,10 +1294,46 @@ function StorageTab() {
 
         {activeGrant && (
           <p className="text-xs text-muted-foreground pt-1">
-            Provider actif : <span className="font-semibold text-foreground">{activeGrant.providerType}</span>. 
+            Provider actif : <span className="font-semibold text-foreground">{activeGrant.providerType}</span>.
             Les nouvelles versions de documents seront stockées via ce provider.
           </p>
         )}
+      </div>
+
+      {/* Elasticsearch reindex card */}
+      <div className="rounded-xl border border-border bg-card p-6 space-y-4">
+        <div>
+          <h2 className="text-sm font-semibold text-foreground mb-1">Elasticsearch — Moteur de recherche</h2>
+          <p className="text-xs text-muted-foreground">
+            Réindexez tous les documents existants dans Elasticsearch. À utiliser si des documents sont introuvables lors de la recherche ou si Elasticsearch a été activé après le premier upload.
+          </p>
+        </div>
+
+        {reindexResult && (
+          <div className={`rounded-lg border p-3 text-xs space-y-1 ${reindexResult.elasticsearchEnabled ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-red-500/30 bg-red-500/5'}`}>
+            <p className="font-medium text-foreground">{reindexResult.message}</p>
+            {reindexResult.elasticsearchEnabled && (
+              <div className="flex gap-4 text-muted-foreground mt-1">
+                <span>Total : <strong className="text-foreground">{reindexResult.totalDocuments}</strong></span>
+                <span className="text-emerald-600">Indexés : <strong>{reindexResult.indexedCount}</strong></span>
+                {reindexResult.failedCount > 0 && <span className="text-red-500">Échecs : <strong>{reindexResult.failedCount}</strong></span>}
+                <span>Durée : <strong className="text-foreground">{(reindexResult.durationMs / 1000).toFixed(1)}s</strong></span>
+              </div>
+            )}
+          </div>
+        )}
+
+        <button
+          onClick={handleReindex}
+          disabled={reindexing}
+          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+        >
+          {reindexing ? (
+            <><div className="h-4 w-4 animate-spin rounded-full border-2 border-primary-foreground border-t-transparent" /> Réindexation en cours…</>
+          ) : (
+            <><Search className="h-4 w-4" /> Réindexer tous les documents</>
+          )}
+        </button>
       </div>
     </div>
   );
@@ -1252,7 +1354,7 @@ export function AdminPage() {
     });
   };
 
-  if (!hasPermission(Permission.MANAGE_USERS)) {
+  if (!hasPermission(Permission.MANAGE_USERS) && !hasPermission(Permission.APPROVE_SHARING_REQUEST)) {
     return <Navigate to="/dashboard" replace />;
   }
 
@@ -1261,6 +1363,7 @@ export function AdminPage() {
     { id: 'roles', label: 'Rôles & Permissions', icon: ShieldCheck },
     { id: 'storage', label: 'Stockage', icon: Database },
     { id: 'metadata', label: 'Métadonnées', icon: Sliders },
+    { id: 'templates', label: 'Modèles', icon: Layers },
     { id: 'share-requests', label: 'Demandes de Partage', icon: FileText },
   ];
 
@@ -1318,6 +1421,7 @@ export function AdminPage() {
         {resolvedActiveTab === 'roles'          && <RolesTab />}
         {resolvedActiveTab === 'storage'        && <StorageTab />}
         {resolvedActiveTab === 'metadata'       && <MetadataFieldsTab />}
+        {resolvedActiveTab === 'templates'      && <TemplatesAdminTab />}
         {resolvedActiveTab === 'share-requests' && <ShareRequestsTab />}
       </div>
     </>

@@ -96,17 +96,23 @@ function TenantStorageRow({ tenant }: { tenant: TenantDto }) {
   const [configs, setConfigs] = useState<Record<StorageProviderType, ProviderConfig>>({
     Local: {}, S3: {}, Minio: {}, Azure: {},
   });
+  const [limits, setLimits] = useState<Record<StorageProviderType, string>>({
+    Local: '', S3: '', Minio: '', Azure: '',
+  });
 
   const reload = async () => {
     setLoading(true);
     try {
       const data = await getTenantStorageGrants(tenant.id);
       setGrants(data);
-      const next = { ...configs };
+      const nextConfig = { ...configs };
+      const nextLimits = { ...limits };
       for (const g of data) {
-        next[g.providerType] = parseConfig(g.configJson);
+        nextConfig[g.providerType] = parseConfig(g.configJson);
+        nextLimits[g.providerType] = g.storageLimitGB != null ? String(g.storageLimitGB) : '';
       }
-      setConfigs(next);
+      setConfigs(nextConfig);
+      setLimits(nextLimits);
     } catch {
       // tenant might have no grants yet — ok
     } finally {
@@ -124,11 +130,13 @@ function TenantStorageRow({ tenant }: { tenant: TenantDto }) {
   const handleSave = async (provider: StorageProviderType, isGranted: boolean) => {
     setSaving(provider);
     try {
+      const parsedLimit = parseFloat(limits[provider]);
       await setTenantStorageGrant({
         tenantId: tenant.id,
         providerType: provider,
         isGranted,
         configJson: isGranted ? JSON.stringify(configs[provider]) : null,
+        storageLimitGB: isGranted && !isNaN(parsedLimit) && parsedLimit > 0 ? parsedLimit : null,
       });
       toast.success(`Provider ${provider} ${isGranted ? 'accordé' : 'révoqué'} pour ${tenant.name}`);
       await reload();
@@ -261,6 +269,28 @@ function TenantStorageRow({ tenant }: { tenant: TenantDto }) {
                         value={configs[provider]}
                         onChange={(c) => setConfigs((prev) => ({ ...prev, [provider]: c }))}
                       />
+                      {/* Storage limit */}
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-medium text-muted-foreground">
+                          Limite de stockage (Go)
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            min="1"
+                            step="1"
+                            placeholder="Ex : 50"
+                            value={limits[provider]}
+                            onChange={(e) =>
+                              setLimits((prev) => ({ ...prev, [provider]: e.target.value }))
+                            }
+                            className="w-32 rounded-lg border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                          />
+                          <span className="text-xs text-muted-foreground">
+                            {limits[provider] ? `${limits[provider]} Go maximum` : 'Aucune limite définie (100 Go par défaut)'}
+                          </span>
+                        </div>
+                      </div>
                       <button
                         onClick={() => handleSave(provider, true)}
                         disabled={saving === provider}

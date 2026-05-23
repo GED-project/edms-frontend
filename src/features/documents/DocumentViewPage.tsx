@@ -68,20 +68,30 @@ export function DocumentViewPage() {
     setImageLoadError(false);
     let cancelled = false;
 
+    // DOCX and other non-viewable types: skip blob loading entirely.
+    // viewType is derived from docExt — use doc?.title extension as a quick check.
+    const ext = (() => {
+      if (!doc) return '';
+      const parts = doc.title.split('.');
+      return parts.length > 1 ? parts[parts.length - 1].toLowerCase() : '';
+    })();
+    const isViewable = ['pdf', 'jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext);
+    if (!isViewable && ext) return () => { cancelled = true; };
+
     docService.getFileBlob(id)
       .then((url) => {
         if (cancelled) {
           URL.revokeObjectURL(url);
           return;
         }
-        // Revoke the previous URL only once we have a valid replacement.
-        if (blobUrlRef.current) {
-          URL.revokeObjectURL(blobUrlRef.current);
-        }
+        if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
         blobUrlRef.current = url;
         setBlobUrl(url);
       })
-      .catch(() => {});
+      .catch(() => {
+        // File content missing or failed — set sentinel so we don't show "Chargement...".
+        if (!cancelled) setBlobUrl('error');
+      });
 
     return () => {
       cancelled = true;
@@ -536,10 +546,54 @@ export function DocumentViewPage() {
                       : (ocrError || 'Aucun contenu OCR disponible pour ce document.')}
                   </div>
                 </div>
-             ) : !blobUrl ? (
-                <div className="w-full max-w-[800px] bg-card p-16 shadow-xl border border-border min-h-[400px] flex flex-col items-center justify-center gap-3 animate-in fade-in duration-500">
+             ) : viewType === 'document' ? (
+                /* Non-viewable types (DOCX, XLSX, etc.) — show download only */
+                <div className="w-full max-w-[900px] bg-card shadow-xl border border-border h-[calc(100vh-220px)] flex flex-col animate-in fade-in slide-in-from-bottom-4 duration-500">
+                  <div className="px-6 py-4 border-b border-border flex items-center gap-3 shrink-0">
+                    <FileText className="h-5 w-5 text-muted-foreground" />
+                    <h1 className="text-sm font-semibold text-foreground truncate">{doc.title}</h1>
+                  </div>
+                  <div className="flex-1 flex flex-col items-center justify-center p-10 gap-4">
+                    <FileText className="h-16 w-16 text-muted-foreground/30" />
+                    <p className="text-sm text-muted-foreground text-center max-w-sm">
+                      L'aperçu intégré n'est pas disponible pour ce type de fichier
+                      {docExt ? ` (.${docExt.toUpperCase()})` : ''}.
+                    </p>
+                    <button
+                      onClick={async () => {
+                        try {
+                          await docService.downloadDocument(doc.id, doc.title);
+                          toast.success(`Téléchargement de ${doc.title}...`);
+                        } catch (err: any) {
+                          toast.error(err?.response?.data?.error?.message || 'Erreur lors du téléchargement');
+                        }
+                      }}
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground text-xs font-bold rounded-lg hover:bg-primary/90 transition-all"
+                    >
+                      <Download className="h-4 w-4" />
+                      Télécharger le fichier
+                    </button>
+                  </div>
+                </div>
+             ) : !blobUrl || blobUrl === 'error' ? (
+                <div className="w-full max-w-[800px] bg-card p-16 shadow-xl border border-border min-h-[400px] flex flex-col items-center justify-center gap-4 animate-in fade-in duration-500">
                   <FileText className="h-10 w-10 text-muted-foreground/40" />
-                  <p className="text-sm text-muted-foreground">Chargement du document...</p>
+                  {blobUrl === 'error' ? (
+                    <>
+                      <p className="text-sm font-medium text-destructive">Fichier introuvable</p>
+                      <p className="text-xs text-muted-foreground text-center max-w-xs">
+                        Le contenu de ce document n'est pas disponible. Veuillez re-téléverser le fichier.
+                      </p>
+                      <button
+                        onClick={async () => { try { await docService.downloadDocument(doc.id, doc.title); } catch {} }}
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground text-xs font-bold rounded-lg hover:bg-primary/90 transition-all"
+                      >
+                        <Download className="h-4 w-4" /> Essayer de télécharger
+                      </button>
+                    </>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">Chargement du document...</p>
+                  )}
                 </div>
              ) : viewType === 'pdf' ? (
                 <div className="w-full max-w-[1000px] bg-white dark:bg-zinc-800 shadow-2xl border border-border h-[calc(100vh-220px)] animate-in fade-in slide-in-from-bottom-4 duration-500">

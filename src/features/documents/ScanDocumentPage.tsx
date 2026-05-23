@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import jsPDF from 'jspdf';
 import { Helmet } from 'react-helmet-async';
 import { 
   ScanLine, CheckCircle2, RefreshCw,
@@ -20,7 +21,7 @@ export function ScanDocumentPage() {
   const libId = searchParams.get('lib');
   const folderId = searchParams.get('folder');
    const { isLoading, hasPermission } = useAuth();
-   const { setScanImages } = useScanContext();
+   const { setScanImages: _setScanImages } = useScanContext();
   const [phase, setPhase] = useState<ScanPhase>('idle');
   const [progress, setProgress] = useState(0);
   const [ocrText, setOcrText] = useState('');
@@ -34,12 +35,15 @@ export function ScanDocumentPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
    const ocrAbortRef = useRef<AbortController | null>(null);
 
+  // Revoke the preview URL when it changes — never aborts the scan.
   useEffect(() => {
-    return () => {
-         ocrAbortRef.current?.abort();
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-    };
+    return () => { if (previewUrl) URL.revokeObjectURL(previewUrl); };
   }, [previewUrl]);
+
+  // Abort any in-flight OCR only when the component fully unmounts.
+  useEffect(() => {
+    return () => { ocrAbortRef.current?.abort(); };
+  }, []);
 
   const handleReset = () => {
       ocrAbortRef.current?.abort();
@@ -58,111 +62,75 @@ export function ScanDocumentPage() {
   };
 
    const handleStartScan = async (incomingFiles?: File[]) => {
-         if (isLoading) {
-            toast.info('Authentication is still loading. Please wait a moment and try again.');
-            return;
-         }
+      // Guard: permission check only (never block on isLoading for tenant users)
+      if (!hasPermission(Permission.PERFORM_OCR)) {
+         toast.error('Vous n\'avez pas la permission d\'utiliser l\'OCR.');
+         return;
+      }
 
-         if (!hasPermission(Permission.PERFORM_OCR)) {
-            toast.error('You do not have permission to use OCR.');
-            return;
-         }
-
+      // Cancel any previous in-flight scan
       ocrAbortRef.current?.abort();
-      const abortController = new AbortController();
-      ocrAbortRef.current = abortController;
+      const abort = new AbortController();
+      ocrAbortRef.current = abort;
 
-      const nextFiles = incomingFiles && incomingFiles.length > 0
+      const nextFiles = incomingFiles?.length
          ? [...selectedFiles, ...incomingFiles]
          : selectedFiles;
 
       if (nextFiles.length === 0) return;
 
       setSelectedFiles(nextFiles);
+      setSelectedFile(nextFiles[0]);
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      setPreviewUrl(URL.createObjectURL(nextFiles[0]));
 
-      if (!selectedFile) {
-         setSelectedFile(nextFiles[0]);
-         if (previewUrl) URL.revokeObjectURL(previewUrl);
-         setPreviewUrl(URL.createObjectURL(nextFiles[0]));
+      // ── Scan animation ──────────────────────────────────────────────────────
+      setPhase('scanning');
+      setProgress(0);
+      for (let i = 0; i <= 100; i += 10) {
+         if (abort.signal.aborted) return;
+         await new Promise((r) => setTimeout(r, 80));
+         setProgress(i);
+         if (i === 60) setPhase('processing');
       }
 
-    setPhase('scanning');
-    setProgress(0);
+      if (abort.signal.aborted) return;
 
-    for (let i = 0; i <= 60; i += 15) {
-      await new Promise((r) => setTimeout(r, 150));
-      setProgress(i);
-    }
-
-    setPhase('processing');
-
-    for (let i = 60; i <= 100; i += 10) {
-      await new Promise((r) => setTimeout(r, 100));
-      setProgress(Math.min(i, 100));
-    }
-
+      // ── OCR call ────────────────────────────────────────────────────────────
       const fileName = nextFiles[0].name.replace(/\.[^.]+$/, '');
       let extractedText = '';
-      let hadOcrPreviewError = false;
 
       try {
-         const previews: Array<{ ocrText: string; hasText: boolean }> = [];
-         for (const f of nextFiles) {
-            try {
-               const preview = await docService.extractOcrPreview(f, abortController.signal);
-               previews.push(preview);
-            } catch (error: any) {
-               const isCanceled =
-                  error?.name === 'CanceledError' ||
-                  error?.name === 'AbortError' ||
-                  error?.code === 'ERR_CANCELED';
-
-               if (isCanceled) {
-                  return;
+         const results = await Promise.all(
+            nextFiles.map(async (f, idx) => {
+               try {
+                  console.log(`[OCR] Sending file ${f.name} (${f.size} bytes) to backend`);
+                  const r = await docService.extractOcrPreview(f, abort.signal);
+                  console.log(`[OCR] Response for file ${idx}:`, r);
+                  return r.ocrText?.trim() ?? '';
+               } catch (err: any) {
+                  if (err?.name === 'CanceledError' || err?.name === 'AbortError' || err?.code === 'ERR_CANCELED') {
+                     throw err; // re-throw so outer catch handles it
+                  }
+                  console.error(`[OCR] File ${f.name} failed:`, err);
+                  return '';
                }
-
-               hadOcrPreviewError = true;
-               console.error('OCR preview failed for scan file:', f.name, error);
-               previews.push({ ocrText: '', hasText: false });
-            }
-         }
-
-         if (abortController.signal.aborted) {
-            return;
-         }
-
-         extractedText = previews
-            .map((p, i) => {
-               const text = (p.ocrText || '').trim();
-               if (!text) return '';
-               return nextFiles.length > 1 ? `--- Page ${i + 1} ---\n${text}` : text;
             })
-            .filter(Boolean)
-            .join('\n\n');
-
-         if (hadOcrPreviewError && !extractedText.trim()) {
-            toast.error('OCR preview failed. Check OCR permission, backend availability, or Tesseract configuration.');
-         }
-      } catch (error: any) {
-         const isCanceled =
-            error?.name === 'CanceledError' ||
-            error?.name === 'AbortError' ||
-            error?.code === 'ERR_CANCELED';
-
-         if (isCanceled) {
-            return;
-         }
-
+         );
+         extractedText = results.filter(Boolean).join('\n\n');
+      } catch (err: any) {
+         const isCanceled = err?.name === 'CanceledError' || err?.name === 'AbortError' || err?.code === 'ERR_CANCELED';
+         if (isCanceled || abort.signal.aborted) return; // user clicked Reset
+         console.error('[OCR] Unexpected error:', err);
          extractedText = '';
       }
 
-      if (abortController.signal.aborted) {
-         return;
-      }
+      if (abort.signal.aborted) return;
 
+      // ── Always transition to done ────────────────────────────────────────────
       setOcrText(extractedText);
       setDocName(fileName);
-    setPhase('done');
+      setPhase('done');
   };
 
   const handleConfirm = async () => {
@@ -179,28 +147,64 @@ export function ScanDocumentPage() {
     setIsSubmitting(true);
     
     try {
-      // Store scanned pages in context for the upload page (CamScanner-style multi-page PDF)
-      setScanImages(selectedFiles);
+      // Convert scanned images to PDF HERE before navigating, so the upload
+      // page receives a finished File object with no async work required.
+      toast.info('Conversion en PDF…');
+      const pdfFile = await convertToPdf(selectedFiles, docName);
 
-      // Store metadata in sessionStorage for upload page to read
       const scanMetadata = {
         name: docName,
         ocrText: ocrText,
         department: department,
         tags: selectedTags,
-            originalFileName: selectedFiles[0].name,
-            pageCount: selectedFiles.length,
+        originalFileName: selectedFiles[0].name,
+        pageCount: selectedFiles.length,
         timestamp: new Date().toISOString()
       };
-      
       sessionStorage.setItem('edms_scan_metadata', JSON.stringify(scanMetadata));
-      toast.success(`${selectedFiles.length} page(s) scannée(s), prêt pour la conversion PDF`);
-      navigate(`/documents/upload?source=scan${libId ? `&lib=${libId}` : ''}${folderId ? `&folder=${folderId}` : ''}`);
+
+      navigate(
+        `/documents/upload?source=scan${libId ? `&lib=${libId}` : ''}${folderId ? `&folder=${folderId}` : ''}`,
+        { state: { pdfFile, scanMetadata } }
+      );
     } catch (error) {
       toast.error('Erreur lors du traitement du scan');
       console.error('Scan error:', error);
       setIsSubmitting(false);
     }
+  };
+
+  // ── PDF conversion helper ─────────────────────────────────────────────────
+  const convertToPdf = async (imageFiles: File[], name: string): Promise<File> => {
+    const readDataUrl = (f: File) => new Promise<string>((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result as string);
+      r.onerror = rej;
+      r.readAsDataURL(f);
+    });
+
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const pw = pdf.internal.pageSize.getWidth();
+    const ph = pdf.internal.pageSize.getHeight();
+
+    for (let i = 0; i < imageFiles.length; i++) {
+      if (i > 0) pdf.addPage('a4', 'portrait');
+      const dataUrl = await readDataUrl(imageFiles[i]);
+      const img = await new Promise<HTMLImageElement>((res, rej) => {
+        const el = new Image();
+        el.onload = () => res(el);
+        el.onerror = rej;
+        el.src = dataUrl;
+      });
+      const ratio = Math.min((pw - 10) / img.width, (ph - 10) / img.height);
+      const w = img.width * ratio;
+      const h = img.height * ratio;
+      const fmt = imageFiles[i].type === 'image/png' ? 'PNG' : 'JPEG';
+      pdf.addImage(dataUrl, fmt, 5, 5, w, h);
+    }
+
+    const blob = pdf.output('blob');
+    return new File([blob], `${name || 'Document'}.pdf`, { type: 'application/pdf' });
   };
 
   return (
@@ -332,14 +336,20 @@ export function ScanDocumentPage() {
                        )}
   
                           {phase === 'done' && (
-                            <div className="bg-accent/50 p-6 rounded-2xl border border-border max-w-sm mx-auto text-left space-y-4 animate-in slide-in-from-bottom-4">
+                            <div className="relative z-40 bg-accent/90 backdrop-blur-sm p-6 rounded-2xl border border-border max-w-sm mx-auto text-left space-y-4 animate-in slide-in-from-bottom-4">
                                <div className="flex justify-between text-[10px] font-bold uppercase text-muted-foreground tracking-widest">
                                   <span>Confidence</span>
                                   <span className="text-emerald-500 font-black">98.4%</span>
                                </div>
                                <div className="flex justify-between text-[10px] font-bold uppercase text-muted-foreground tracking-widest">
                                   <span>Langue</span>
-                                  <span className="text-foreground">Français</span>
+                                  <span className="text-foreground">
+                                    {ocrText && /[؀-ۿ]/.test(ocrText) && /[a-zA-Z]/.test(ocrText)
+                                      ? 'Arabe + Latin'
+                                      : ocrText && /[؀-ۿ]/.test(ocrText)
+                                      ? 'Arabe'
+                                      : 'Français / Anglais'}
+                                  </span>
                                </div>
                                <div className="flex justify-between text-[10px] font-bold uppercase text-muted-foreground tracking-widest">
                                   <span>Taille</span>
@@ -402,29 +412,59 @@ export function ScanDocumentPage() {
                      </div>
                   </div>
                ) : (
-                  <div className="p-6 space-y-8 animate-in fade-in duration-500">
-                     <div className="space-y-6">
+                  <div className="p-6 space-y-6 animate-in fade-in duration-500">
+
+                     {/* ── OCR Result Banner ─────────────────────────────── */}
+                     {ocrText.trim() ? (
+                        <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/30 p-4 flex items-start gap-3">
+                           <CheckCircle2 className="h-5 w-5 text-emerald-500 shrink-0 mt-0.5" />
+                           <div>
+                              <p className="text-xs font-bold text-emerald-600 dark:text-emerald-400">
+                                 Texte extrait avec succès
+                              </p>
+                              <p className="text-[11px] text-muted-foreground mt-0.5">
+                                 {ocrText.trim().split(/\s+/).length} mots · {ocrText.trim().length} caractères
+                              </p>
+                           </div>
+                        </div>
+                     ) : (
+                        <div className="rounded-xl bg-amber-500/10 border border-amber-500/30 p-4 flex items-start gap-3">
+                           <Info className="h-5 w-5 text-amber-500 shrink-0 mt-0.5" />
+                           <p className="text-[11px] text-amber-700 dark:text-amber-400 leading-relaxed">
+                              Aucun texte extrait. Vérifiez la qualité de l'image ou la langue du document.
+                           </p>
+                        </div>
+                     )}
+
+                     <div className="space-y-5">
                         <div className="space-y-2">
                            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Nom du document</label>
-                           <input 
-                             type="text" 
+                           <input
+                             type="text"
                              value={docName}
                              onChange={(e) => setDocName(e.target.value)}
                              className="w-full bg-accent/30 border border-border rounded-lg px-3 py-2 text-sm text-foreground font-bold focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all"
                              placeholder="Nom du document..."
                            />
                         </div>
-  
+
                         <div className="space-y-2">
                            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest flex items-center justify-between">
-                              Texte Extrait
-                              <span className="text-[9px] text-primary italic font-medium">Auto-généré</span>
+                              Texte Extrait (OCR)
+                              <span className="text-[9px] text-primary italic font-medium">
+                                 {ocrText.trim().length > 0 ? `${ocrText.trim().length} chars` : 'vide'}
+                              </span>
                            </label>
-                           <textarea 
-                             rows={8}
+                           <textarea
+                             rows={12}
                              value={ocrText}
                              onChange={(e) => setOcrText(e.target.value)}
-                             className="w-full bg-accent/30 border border-border rounded-lg px-3 py-2 text-[11px] text-foreground leading-relaxed resize-none focus:outline-none focus:ring-2 focus:ring-primary/20"
+                             className={`w-full border rounded-lg px-3 py-2 text-xs text-foreground leading-relaxed resize-y focus:outline-none focus:ring-2 transition-all ${
+                               ocrText.trim()
+                                 ? 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-300 dark:border-emerald-700 focus:ring-emerald-500/20'
+                                 : 'bg-accent/30 border-border focus:ring-primary/20'
+                             }`}
+                             placeholder="Le texte OCR apparaîtra ici après l'analyse..."
                            />
                         </div>
 

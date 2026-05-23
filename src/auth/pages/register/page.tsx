@@ -1,7 +1,6 @@
 import * as React from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useNavigate } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
 import {
   Eye,
@@ -113,13 +112,12 @@ function PasswordStrengthBar({ password }: { password: string }) {
 type ViewState = 'form' | 'success';
 
 export function RegisterPage() {
-  const navigate = useNavigate();
   const [view, setView] = React.useState<ViewState>('form');
   const [showPassword, setShowPassword] = React.useState(false);
   const [showConfirm, setShowConfirm] = React.useState(false);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [serverError, setServerError] = React.useState<string | null>(null);
-  const [_registeredEmail, setRegisteredEmail] = React.useState('');
+  const [registeredEmail, setRegisteredEmail] = React.useState('');
 
   const {
     register,
@@ -192,7 +190,7 @@ export function RegisterPage() {
     return (
       <>
         <Helmet>
-          <title>Compte créé — ItDoc</title>
+          <title>Confirmation — EDMS Enterprise</title>
         </Helmet>
         <div className="flex min-h-screen items-center justify-center bg-background px-4">
           <div className="w-full max-w-md text-center space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-500">
@@ -204,15 +202,41 @@ export function RegisterPage() {
                 Compte créé avec succès !
               </h1>
               <p className="text-muted-foreground text-sm leading-relaxed">
-                Votre compte est prêt. Vous pouvez vous connecter dès maintenant.
+                Un e-mail de confirmation a été envoyé à{' '}
+                <span className="font-medium text-foreground">
+                  {registeredEmail}
+                </span>
+                .<br />
+                Cliquez sur le lien dans l&apos;e-mail pour activer votre compte.
               </p>
             </div>
+            <div className="rounded-lg border border-border bg-muted/40 p-4 text-left space-y-2">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Prochaines étapes
+              </p>
+              {[
+                'Vérifiez votre boîte de réception (et les spams)',
+                'Cliquez sur le lien de confirmation',
+                'Connectez-vous à votre espace EDMS',
+              ].map((step, i) => (
+                <div
+                  key={i}
+                  className="flex items-start gap-2 text-sm text-foreground"
+                >
+                  <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+                    {i + 1}
+                  </span>
+                  {step}
+                </div>
+              ))}
+            </div>
             <Button
+              variant="outline"
               size="lg"
               className="w-full"
-              onClick={() => navigate('/auth/login')}
+              onClick={() => setView('form')}
             >
-              Se connecter
+              Retour à l&apos;inscription
             </Button>
           </div>
         </div>
@@ -226,10 +250,10 @@ export function RegisterPage() {
   return (
     <>
       <Helmet>
-        <title>Inscription — ItDoc</title>
+        <title>Inscription — EDMS Enterprise</title>
         <meta
           name="description"
-          content="Créez votre compte ItDoc pour accéder à votre espace documentaire."
+          content="Créez votre compte EDMS Enterprise pour accéder à votre espace documentaire."
         />
       </Helmet>
 
@@ -241,7 +265,7 @@ export function RegisterPage() {
               <ShieldCheck className="h-4 w-4 text-white" />
             </div>
             <span className="text-sm font-semibold tracking-wide">
-              ItDoc
+              EDMS Enterprise
             </span>
           </div>
           <div className="space-y-4">
@@ -256,7 +280,7 @@ export function RegisterPage() {
             </p>
           </div>
           <p className="text-xs text-zinc-600">
-            © {new Date().getFullYear()} ItDoc. Tous droits réservés.
+            © {new Date().getFullYear()} EDMS Enterprise. Tous droits réservés.
           </p>
         </div>
 
@@ -270,7 +294,7 @@ export function RegisterPage() {
                   <ShieldCheck className="h-3.5 w-3.5 text-white" />
                 </div>
                 <span className="text-sm font-semibold text-foreground">
-                  ItDoc
+                  EDMS Enterprise
                 </span>
               </div>
               <h2 className="text-2xl font-bold tracking-tight text-foreground">

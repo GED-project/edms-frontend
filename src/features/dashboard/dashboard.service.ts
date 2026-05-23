@@ -95,8 +95,9 @@ function formatCount(value: number): string {
 function transform(raw: RawDashboardData): DashboardData {
   const { kpiCards, dailyActivity, departmentDelays, departmentUsage } = raw;
 
+  // Use higher precision so very small values (< 0.1%) are not rounded to 0.
   const storagePct = kpiCards.storageCapacityGB > 0
-    ? Math.round((kpiCards.storageUsedGB / kpiCards.storageCapacityGB) * 1000) / 10
+    ? (kpiCards.storageUsedGB / kpiCards.storageCapacityGB) * 100
     : 0;
 
   return {

@@ -61,7 +61,7 @@ export function ResetPasswordPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token');
-  const email = searchParams.get('email');
+  const email = searchParams.get('email') ?? '';
 
   const [view, setView] = React.useState<ViewState>('form');
   const [showPassword, setShowPassword] = React.useState(false);
@@ -71,12 +71,13 @@ export function ResetPasswordPage() {
 
   // Vérification de la présence du token
   React.useEffect(() => {
-    if (!token || !email) {
-      // Pas de token ou email -> lien invalide ou accès manuel. On bloque et on redirige.
+    if (!token) {
+      // Pas de token -> lien invalide ou accès manuel. On bloque et on redirige.
       console.warn("Lien de réinitialisation invalide ou manquant. Redirection...");
+      // Optionnellement, on pourrait passer un state pour afficher un toast sur la page de login
       navigate('/auth/login', { replace: true });
     }
-  }, [token, email, navigate]);
+  }, [token, navigate]);
 
   const {
     register,
@@ -89,14 +90,14 @@ export function ResetPasswordPage() {
   });
 
   const onSubmit = async (data: ResetPasswordFormValues) => {
-    if (!token || !email) return;
+    if (!token) return;
 
     setIsSubmitting(true);
     setServerError(null);
     try {
       const result = await resetPassword({
-        email,
         token,
+        email,
         password: data.password,
       });
 
@@ -112,8 +113,8 @@ export function ResetPasswordPage() {
     }
   };
 
-  // Ne rien afficher le temps de la redirection si pas de token ou email
-  if (!token || !email) return null;
+  // Ne rien afficher le temps de la redirection si pas de token
+  if (!token) return null;
 
   // ---------------------------------------------------------------------------
   // Success view
@@ -122,7 +123,7 @@ export function ResetPasswordPage() {
     return (
       <>
         <Helmet>
-          <title>Mot de passe modifié — ItDoc</title>
+          <title>Mot de passe modifié — EDMS Enterprise</title>
         </Helmet>
         <div className="flex min-h-screen items-center justify-center bg-background px-4">
           <div className="w-full max-w-md text-center space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-500">
@@ -158,7 +159,7 @@ export function ResetPasswordPage() {
   return (
     <>
       <Helmet>
-        <title>Nouveau mot de passe — ItDoc</title>
+        <title>Nouveau mot de passe — EDMS Enterprise</title>
       </Helmet>
 
       <div className="flex min-h-screen bg-background">
@@ -169,7 +170,7 @@ export function ResetPasswordPage() {
               <ShieldCheck className="h-4 w-4 text-white" />
             </div>
             <span className="text-sm font-semibold tracking-wide">
-              ItDoc
+              EDMS Enterprise
             </span>
           </div>
           <div className="space-y-4">
@@ -183,7 +184,7 @@ export function ResetPasswordPage() {
             </p>
           </div>
           <p className="text-xs text-zinc-600">
-            © {new Date().getFullYear()} ItDoc. Tous droits réservés.
+            © {new Date().getFullYear()} EDMS Enterprise. Tous droits réservés.
           </p>
         </div>
 
@@ -198,7 +199,7 @@ export function ResetPasswordPage() {
                   <ShieldCheck className="h-3.5 w-3.5 text-white" />
                 </div>
                 <span className="text-sm font-semibold text-foreground">
-                  ItDoc
+                  EDMS Enterprise
                 </span>
               </div>
               <h2 className="text-2xl font-bold tracking-tight text-foreground">

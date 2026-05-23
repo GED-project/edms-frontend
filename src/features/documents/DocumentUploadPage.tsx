@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Helmet } from 'react-helmet-async';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import jsPDF from 'jspdf';
 import { 
   X, UploadCloud, CheckCircle2,
@@ -31,70 +31,62 @@ interface UploadFile {
   tags: string[];
   metaValues: Record<string, string>;
   description: string;
+  clearanceLevel: 0 | 1 | 2;
 }
 
 type Step = 1 | 2 | 3;
 
-const MAX_SIZE_MB = 10;
+const MAX_SIZE_MB = 50;
 const ALLOWED_MIME_TYPES = [
   'application/pdf',
   'image/jpeg',
   'image/png',
   'image/webp',
+  'image/gif',
+  'image/tiff',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/msword',
+  'application/vnd.ms-excel',
   'text/plain',
+  'text/csv',
 ];
+const ALLOWED_EXTENSIONS = /\.(pdf|docx?|xlsx?|pptx?|txt|csv|jpe?g|png|webp|gif|tiff?)$/i;
 
 export function DocumentUploadPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
-  const { scannedImages, clearScanImages } = useScanContext();
-  
+  const { scannedImages: _scannedImages, clearScanImages: _clearScanImages } = useScanContext();
+
   // ?lib=LIB_ID&folder=FOLDER_ID  OR legacy ?folder=LIB_ID
   const libId = searchParams.get('lib') || searchParams.get('folder');
   const folderId = searchParams.get('folder') && searchParams.get('lib') ? searchParams.get('folder') : null;
-  
-  const [currentStep, setCurrentStep] = useState<Step>(searchParams.get('source') === 'scan' ? 2 : 1);
-  const [files, setFiles] = useState<UploadFile[]>([]);
 
-  // Convert scanned image to PDF on component mount if coming from scan page
-  useEffect(() => {
-    if (searchParams.get('source') === 'scan' && scannedImages.length > 0 && files.length === 0) {
-      (async () => {
-        try {
-          const scanMetadata = sessionStorage.getItem('edms_scan_metadata');
-          const metadata = scanMetadata ? JSON.parse(scanMetadata) : {};
-          
-          // Convert one or more scanned images into a single PDF
-          const pdfBlob = await convertImagesToPdf(scannedImages);
-          const pdfFile = new File([pdfBlob], `${metadata.name || 'Document'}.pdf`, { type: 'application/pdf' });
-          
-          setFiles([{
-            id: 'scan-result',
-            file: pdfFile,
-            progress: 100,
-            status: 'success',
-            previewUrl: undefined,
-            name: metadata.name || 'Document numérisé',
-            tags: metadata.tags || [],
-            metaValues: { ocrText: metadata.ocrText || '' },
-            description: ''
-          }]);
-          
-          toast.success('Image convertie en PDF avec succès');
-        } catch (error) {
-          toast.error('Erreur lors de la conversion en PDF');
-          console.error('PDF conversion error:', error);
-          setFiles([]);
-          navigate('/documents');
-        } finally {
-          clearScanImages();
-        }
-      })();
-    }
-  }, [searchParams, scannedImages, files.length, clearScanImages, navigate]);
+  const [currentStep, setCurrentStep] = useState<Step>(searchParams.get('source') === 'scan' ? 2 : 1);
+
+  // Initialize files synchronously from router state when arriving from scan page.
+  // Using the lazy-initializer form of useState guarantees this runs once,
+  // before the first render, with no async race conditions.
+  const [files, setFiles] = useState<UploadFile[]>(() => {
+    const pdfFile = (location.state as any)?.pdfFile as File | undefined;
+    if (!pdfFile) return [];
+    const meta = (location.state as any)?.scanMetadata as any;
+    return [{
+      id: 'scan-result',
+      file: pdfFile,
+      progress: 100,
+      status: 'success' as const,
+      previewUrl: URL.createObjectURL(pdfFile),
+      name: meta?.name || pdfFile.name.replace(/\.pdf$/i, ''),
+      tags: meta?.tags ?? [],
+      metaValues: { ocrText: meta?.ocrText ?? '' },
+      description: '',
+      clearanceLevel: 0,
+    }];
+  });
 
   const convertImagesToPdf = async (imageFiles: File[]): Promise<Blob> => {
     if (imageFiles.length === 0) {
@@ -246,8 +238,9 @@ export function DocumentUploadPage() {
 
   const validateFile = (file: File): string | null => {
     if (file.size > MAX_SIZE_MB * 1024 * 1024) return `Taille maximale dépassée (${MAX_SIZE_MB} Mo)`;
-    if (!ALLOWED_MIME_TYPES.includes(file.type) && !file.name.endsWith('.docx') && !file.name.endsWith('.xlsx'))
-      return 'Type de fichier non autorisé.';
+    const mimeOk = file.type && ALLOWED_MIME_TYPES.includes(file.type);
+    const extOk = ALLOWED_EXTENSIONS.test(file.name);
+    if (!mimeOk && !extOk) return 'Type de fichier non autorisé.';
     return null;
   };
 
@@ -267,7 +260,8 @@ export function DocumentUploadPage() {
         name: f.name.replace(/\.[^.]+$/, ''),
         tags: [],
         metaValues: {},
-        description: ''
+        description: '',
+        clearanceLevel: 0,
       };
     });
     setFiles((prev) => {
@@ -306,7 +300,12 @@ export function DocumentUploadPage() {
   const handleFinish = async () => {
     const successFiles = files.filter(f => f.status === 'success');
     if (successFiles.length === 0) {
-      toast.error("Veuillez sélectionner au moins un fichier.");
+      setCurrentStep(1);
+      if (files.some(f => f.status === 'error')) {
+        toast.error("Certains fichiers ont des erreurs. Vérifiez le type et la taille (max 10 Mo).");
+      } else {
+        toast.error("Veuillez sélectionner au moins un fichier.");
+      }
       return;
     }
 
@@ -357,6 +356,7 @@ export function DocumentUploadPage() {
               approverUserId: requestApproval && selectedValidatorId ? selectedValidatorId : undefined,
               ocrText: fallbackOcrText,
               metadata: f.metaValues,
+              clearanceLevel: f.clearanceLevel,
             },
             fileToUpload,
             (pct) => setFiles(prev => prev.map(u => u.id === f.id ? { ...u, progress: pct } : u)),
@@ -717,6 +717,33 @@ export function DocumentUploadPage() {
                           />
                         </div>
   
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Niveau de confidentialité</label>
+                          <div className="flex gap-2">
+                            {([
+                              { value: 0, label: 'Public',        color: 'emerald', desc: 'Visible par tous' },
+                              { value: 1, label: 'Interne',       color: 'amber',   desc: 'Personnel interne' },
+                              { value: 2, label: 'Confidentiel',  color: 'red',     desc: 'Accès restreint' },
+                            ] as const).map((lvl) => (
+                              <button
+                                key={lvl.value}
+                                type="button"
+                                onClick={() => updateActiveFile({ clearanceLevel: lvl.value })}
+                                className={`flex-1 flex flex-col items-center gap-0.5 rounded-lg border px-2 py-2 text-xs font-semibold transition-all ${
+                                  activeFile.clearanceLevel === lvl.value
+                                    ? lvl.color === 'emerald' ? 'border-emerald-500 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                                    : lvl.color === 'amber'   ? 'border-amber-500 bg-amber-500/10 text-amber-700 dark:text-amber-400'
+                                    :                           'border-red-500 bg-red-500/10 text-red-700 dark:text-red-400'
+                                    : 'border-border bg-background text-muted-foreground hover:bg-accent'
+                                }`}
+                              >
+                                <span>{lvl.label}</span>
+                                <span className="text-[9px] font-normal opacity-70">{lvl.desc}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
                         <div className="space-y-3">
                           <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Étiquettes / Tags</label>
                           <TagEditor
@@ -894,9 +921,9 @@ export function DocumentUploadPage() {
                         >
                            Annuler
                         </button>
-                        <button 
+                        <button
                           onClick={() => setCurrentStep(2)}
-                          disabled={files.length === 0}
+                          disabled={!files.some(f => f.status === 'success')}
                           className="flex items-center justify-center gap-2 py-3 bg-primary hover:bg-primary/90 disabled:opacity-40 text-white text-xs font-black uppercase tracking-widest rounded-2xl shadow-xl shadow-primary/20 transition-all"
                         >
                            Suivant <ChevronRight className="h-4 w-4" />
@@ -904,30 +931,32 @@ export function DocumentUploadPage() {
                      </>
                   ) : currentStep === 2 ? (
                      <>
-                        <button 
+                        <button
                           onClick={() => setCurrentStep(1)}
                           className="flex items-center justify-center gap-2 py-3 border border-border bg-card hover:bg-accent text-foreground text-xs font-black uppercase tracking-widest rounded-2xl transition-all"
                         >
                            <ChevronLeft className="h-4 w-4" /> Retour
                         </button>
-                        <button 
+                        <button
                           onClick={() => setCurrentStep(3)}
-                          className="flex items-center justify-center gap-2 py-3 bg-primary hover:bg-primary/90 text-white text-xs font-black uppercase tracking-widest rounded-2xl shadow-xl shadow-primary/20 transition-all"
+                          disabled={!files.some(f => f.status === 'success')}
+                          className="flex items-center justify-center gap-2 py-3 bg-primary hover:bg-primary/90 disabled:opacity-40 text-white text-xs font-black uppercase tracking-widest rounded-2xl shadow-xl shadow-primary/20 transition-all"
                         >
                            Suivant <ChevronRight className="h-4 w-4" />
                         </button>
                      </>
                   ) : (
                      <>
-                        <button 
+                        <button
                           onClick={() => setCurrentStep(2)}
                           className="flex items-center justify-center gap-2 py-3 border border-border bg-card hover:bg-accent text-foreground text-xs font-black uppercase tracking-widest rounded-2xl transition-all"
                         >
                            <ChevronLeft className="h-4 w-4" /> Retour
                         </button>
-                        <button 
+                        <button
                           onClick={handleFinish}
-                          className="flex items-center justify-center gap-2 py-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black uppercase tracking-widest rounded-2xl shadow-xl shadow-emerald-600/20 transition-all"
+                          disabled={!files.some(f => f.status === 'success')}
+                          className="flex items-center justify-center gap-2 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-black uppercase tracking-widest rounded-2xl shadow-xl shadow-emerald-600/20 transition-all"
                         >
                            <CheckCircle2 className="h-4 w-4" /> Terminer
                         </button>

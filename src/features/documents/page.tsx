@@ -21,7 +21,6 @@ import {
 import { toast } from 'sonner';
 import JSZip from 'jszip';
 import { activityLogger } from '@/lib/activity-logger';
-import { DocumentThumbnail } from './DocumentThumbnail';
 
 type DocStatus = 'active' | 'approved' | 'pending' | 'expired' | 'draft' | 'rejected';
 
@@ -231,7 +230,7 @@ function ContextMenu({
             }
             onClose();
           }}
-          className={`flex w-full items-center gap-2.5 px-3 py-2 text-sm hover:bg-accent transition-colors ${action.color}`}
+          className={`flex w-full items-center gap-2.5 px-3 py-2 text-sm hover:bg-primary/10 transition-colors ${action.color}`}
         >
           <action.icon className="h-3.5 w-3.5" />
           {action.label}
@@ -656,8 +655,8 @@ export function DocumentsPage() {
   return (
     <>
       <Helmet>
-        <title>Documents — ItDoc</title>
-        <meta name="description" content="Gestion et consultation des documents du système ItDoc." />
+        <title>Documents — EDMS Enterprise</title>
+        <meta name="description" content="Gestion et consultation des documents du système EDMS." />
       </Helmet>
 
       <div className="space-y-5 max-w-7xl mx-auto">
@@ -666,7 +665,7 @@ export function DocumentsPage() {
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-foreground">
-              {showTrash ? 'Corbeille' : isRootView ? 'Document Library' : currentFolderNode?.name ?? 'Documents'}
+              {showTrash ? 'Corbeille' : isRootView ? 'Bibliothèque de documents' : currentFolderNode?.name ?? 'Documents'}
             </h1>
             <p className="text-sm text-muted-foreground">
               {search ? `${filtered.length} résultat(s) pour "${search}"` : `${filtered.length} élément(s)`}
@@ -707,7 +706,7 @@ export function DocumentsPage() {
                 className="flex items-center gap-2 rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700 transition-colors shadow-sm"
               >
                 <Plus className="h-4 w-4" />
-                {isRootView ? 'New Library' : 'New Folder'}
+                {isRootView ? 'Nouvelle bibliothèque' : 'Nouveau dossier'}
               </button>
             )}
           </div>
@@ -721,7 +720,7 @@ export function DocumentsPage() {
               className="flex items-center gap-1.5 hover:text-foreground transition-colors shrink-0"
             >
               <Home className="h-3.5 w-3.5" />
-              <span className={isRootView ? 'font-semibold text-foreground' : ''}>Document Library</span>
+              <span className={isRootView ? 'font-semibold text-foreground' : ''}>Bibliothèque de documents</span>
             </button>
             {breadcrumbs.map((crumb, idx) => (
               <React.Fragment key={crumb.id}>
@@ -1357,12 +1356,9 @@ export function DocumentsPage() {
                     
                     {/* Icon / Thumbnail */}
                     <div className="mt-4 mb-3 flex justify-center">
-                      <DocumentThumbnail
-                        docId={doc.id}
-                        docType={doc.type}
-                        docName={doc.name}
-                        className="h-20 w-full rounded-xl"
-                      />
+                      <div className={`flex h-16 w-16 items-center justify-center rounded-2xl ${TYPE_COLOR[doc.type]} bg-opacity-20`}>
+                        <Icon className="h-8 w-8" />
+                      </div>
                     </div>
 
                     {/* Info */}

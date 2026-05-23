@@ -38,6 +38,7 @@ export function HostDashboardPage() {
               documentCount: 0,
               libraryCount: 0,
               storageBytes: 0,
+              storageLimitGB: null,
             })),
           );
         }
@@ -132,12 +133,31 @@ export function HostDashboardPage() {
                   <Stat label="Utilisateurs" value={s.userCount} icon={Users} />
                   <Stat label="Documents" value={s.documentCount} icon={FileText} />
                   <Stat label="Bibliothèques" value={s.libraryCount} icon={FolderTree} />
-                  <Stat
-                    label="Stockage"
-                    value={formatBytes(s.storageBytes)}
-                    icon={HardDrive}
-                    isString
-                  />
+                  <div className="flex flex-col gap-0.5 rounded-lg bg-muted/40 px-3 py-2">
+                    <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                      <HardDrive className="h-3 w-3" />
+                      Stockage
+                    </div>
+                    <p className="text-sm font-bold text-foreground">
+                      {formatBytes(s.storageBytes)}
+                      {s.storageLimitGB != null && (
+                        <span className="text-muted-foreground font-normal"> / {s.storageLimitGB} Go</span>
+                      )}
+                    </p>
+                    {s.storageLimitGB != null && (
+                      <div className="mt-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-primary transition-all duration-500"
+                          style={{
+                            width: `${Math.min(
+                              (s.storageBytes / (s.storageLimitGB * 1024 * 1024 * 1024)) * 100,
+                              100,
+                            ).toFixed(1)}%`,
+                          }}
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}

@@ -14,6 +14,11 @@ import {
   type LibraryDto,
   type LibraryAccessDto,
 } from './library.service';
+import {
+  getLibraryTemplates,
+  buildLibraryFromTemplate,
+  type LibraryTemplateLookupDto,
+} from './library-template.service';
 import { getShareableUsers, type ShareableUserDto } from '@/features/admin/admin.service';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -29,6 +34,10 @@ export default function LibrariesPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [libraryToDelete, setLibraryToDelete] = useState<LibraryDto | null>(null);
+  const [createMode, setCreateMode] = useState<'manual' | 'template'>('manual');
+  const [templates, setTemplates] = useState<LibraryTemplateLookupDto[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
 
   // ── Share modal state ──────────────────────────────────────────────────
   const [libraryToShare, setLibraryToShare] = useState<LibraryDto | null>(null);
@@ -36,6 +45,7 @@ export default function LibrariesPage() {
   const [accessLoading, setAccessLoading] = useState(false);
   const [allUsers, setAllUsers] = useState<ShareableUserDto[]>([]);
   const [userSearch, setUserSearch] = useState('');
+  const [librarySearch, setLibrarySearch] = useState('');
 
   const canManage = hasPermission(Permission.MANAGE_DOCUMENTS);
   const isAdmin = (user?.role ?? '').toLowerCase() === Role.ADMIN;
@@ -63,6 +73,31 @@ export default function LibrariesPage() {
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
+
+    if (createMode === 'template') {
+      if (!selectedTemplateId) {
+        setError('Veuillez sélectionner un modèle de bibliothèque');
+        return;
+      }
+
+      try {
+        setSubmitting(true);
+        await buildLibraryFromTemplate(selectedTemplateId);
+        toast.success('Bibliothèque créée depuis le modèle');
+        setShowCreateModal(false);
+        setCreateMode('manual');
+        setSelectedTemplateId('');
+        setError('');
+        loadLibraries();
+      } catch {
+        toast.error('Échec de la création depuis le modèle');
+      } finally {
+        setSubmitting(false);
+      }
+
+      return;
+    }
+
     const trimmed = name.trim();
 
     if (!trimmed) {
@@ -84,6 +119,8 @@ export default function LibrariesPage() {
       setDescription('');
       setIsPublic(false);
       setError('');
+      setCreateMode('manual');
+      setSelectedTemplateId('');
       loadLibraries();
     } catch (error) {
       toast.error('Échec de la création de la bibliothèque');
@@ -91,6 +128,25 @@ export default function LibrariesPage() {
       setSubmitting(false);
     }
   }
+
+  useEffect(() => {
+    if (!showCreateModal || createMode !== 'template') {
+      return;
+    }
+
+    setTemplatesLoading(true);
+    getLibraryTemplates()
+      .then((items) => {
+        setTemplates(items);
+        if (!selectedTemplateId && items.length > 0) {
+          setSelectedTemplateId(items[0].id);
+        }
+      })
+      .catch(() => {
+        toast.error('Impossible de charger les modèles de bibliothèque');
+      })
+      .finally(() => setTemplatesLoading(false));
+  }, [showCreateModal, createMode, selectedTemplateId]);
 
   async function handleDelete() {
     if (!libraryToDelete) return;
@@ -194,6 +250,18 @@ export default function LibrariesPage() {
           )}
         </div>
 
+        {/* Search bar */}
+        <div className="relative max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <input
+            type="text"
+            value={librarySearch}
+            onChange={(e) => setLibrarySearch(e.target.value)}
+            placeholder="Rechercher une bibliothèque..."
+            className="w-full rounded-lg border border-input bg-background pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 placeholder:text-muted-foreground/70"
+          />
+        </div>
+
         {/* Libraries Grid */}
         {libraries.length === 0 ? (
           <div className="py-16 flex flex-col items-center justify-center text-center border border-dashed border-border rounded-2xl bg-card">
@@ -217,9 +285,19 @@ export default function LibrariesPage() {
               </Button>
             )}
           </div>
+        ) : libraries.filter(lib => !librarySearch.trim() || lib.name.toLowerCase().includes(librarySearch.toLowerCase())).length === 0 ? (
+          <div className="py-16 flex flex-col items-center justify-center text-center border border-dashed border-border rounded-2xl bg-card">
+            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 mb-4">
+              <Library className="h-8 w-8 text-primary" />
+            </div>
+            <h3 className="text-lg font-semibold text-foreground">Aucun résultat</h3>
+            <p className="text-sm text-muted-foreground mt-1 max-w-sm">
+              Aucun résultat pour votre recherche.
+            </p>
+          </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
-            {libraries.map((lib) => (
+            {libraries.filter(lib => !librarySearch.trim() || lib.name.toLowerCase().includes(librarySearch.toLowerCase())).map((lib) => (
               <div
                 key={lib.id}
                 className="group relative flex flex-col justify-between rounded-2xl border border-border bg-card p-5 shadow-sm hover:border-primary/40 hover:shadow-md transition-all overflow-hidden"
@@ -292,6 +370,8 @@ export default function LibrariesPage() {
                   setDescription('');
                   setIsPublic(false);
                   setError('');
+                  setCreateMode('manual');
+                  setSelectedTemplateId('');
                 }}
                 className="text-muted-foreground hover:text-foreground transition-colors"
               >
@@ -299,6 +379,65 @@ export default function LibrariesPage() {
               </button>
             </div>
             <form onSubmit={handleCreate} className="p-5 space-y-4">
+              <div>
+                <p className="block text-sm font-medium text-foreground mb-2">Mode de création</p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCreateMode('manual');
+                      setError('');
+                    }}
+                    className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-all ${
+                      createMode === 'manual'
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border bg-background text-muted-foreground hover:bg-accent'
+                    }`}
+                  >
+                    Manuel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCreateMode('template');
+                      setError('');
+                    }}
+                    className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-all ${
+                      createMode === 'template'
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border bg-background text-muted-foreground hover:bg-accent'
+                    }`}
+                  >
+                    Modèle
+                  </button>
+                </div>
+              </div>
+
+              {createMode === 'template' && (
+                <div>
+                  <label htmlFor="libraryTemplate" className="block text-sm font-medium text-foreground mb-1">
+                    Modèle de bibliothèque
+                  </label>
+                  <select
+                    id="libraryTemplate"
+                    value={selectedTemplateId}
+                    onChange={(e) => {
+                      setSelectedTemplateId(e.target.value);
+                      setError('');
+                    }}
+                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    disabled={templatesLoading}
+                  >
+                    {templates.length === 0 && <option value="">Aucun modèle disponible</option>}
+                    {templates.map((tpl) => (
+                      <option key={tpl.id} value={tpl.id}>
+                        {tpl.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               <div>
                 <label htmlFor="libraryName" className="block text-sm font-medium text-foreground mb-1">
                   Nom de la bibliothèque
@@ -311,6 +450,7 @@ export default function LibrariesPage() {
                   onChange={(e) => { setName(e.target.value); setError(''); }}
                   placeholder="ex: Ressources Humaines"
                   variant="md"
+                  disabled={createMode === 'template'}
                 />
                 {error && <p className="mt-1.5 text-xs font-medium text-red-500">{error}</p>}
               </div>
@@ -324,6 +464,7 @@ export default function LibrariesPage() {
                   onChange={(e) => setDescription(e.target.value)}
                   placeholder="Décrivez l'objectif de cette bibliothèque..."
                   rows={3}
+                  disabled={createMode === 'template'}
                   className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 placeholder:text-muted-foreground/80"
                 />
               </div>
@@ -336,6 +477,8 @@ export default function LibrariesPage() {
                     setDescription('');
                     setIsPublic(false);
                     setError('');
+                    setCreateMode('manual');
+                    setSelectedTemplateId('');
                   }}
                   variant="outline"
                   size="md"
@@ -349,7 +492,7 @@ export default function LibrariesPage() {
                   size="md"
                   disabled={submitting}
                 >
-                  {submitting ? 'Création...' : 'Créer'}
+                  {submitting ? 'Création...' : createMode === 'template' ? 'Créer depuis modèle' : 'Créer'}
                 </Button>
               </div>
             </form>

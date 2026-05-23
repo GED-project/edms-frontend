@@ -86,6 +86,8 @@ const PAGE_TITLES: Record<string, string> = {
   '/documents': 'Document Library',
   '/documents/shared': 'Shared with Me',
   '/documents/approvals': 'Pending Approvals',
+  '/shared-with-me': 'Partagés avec moi',
+  '/pending-approvals': 'Approbations en attente',
   '/admin': 'Administration',
   '/settings': 'Paramètres',
   '/audit': 'Audit Log',
